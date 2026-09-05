@@ -13,7 +13,17 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from .errors import error
-from .rules import AudioRule, DeliveryArtifactRule, DeliveryPackageRule, DeliveryRule, SubtitleRule, VideoRule
+from .rules import (
+    ArtifactDependencyRule,
+    ArtifactDurationConsistencyRule,
+    AudioRule,
+    CrossArtifactRule,
+    DeliveryArtifactRule,
+    DeliveryPackageRule,
+    DeliveryRule,
+    SubtitleRule,
+    VideoRule,
+)
 
 REQUEST_SCHEMA = "qc/request@1"
 
@@ -137,12 +147,62 @@ def _build_delivery_artifact_rule(data: Any) -> DeliveryArtifactRule:
         raise error("INVALID_REQUEST", f"invalid DeliveryArtifactRule payload: {exc}")
 
 
+def _build_duration_consistency_rule(data: Any) -> ArtifactDurationConsistencyRule:
+    if not isinstance(data, dict):
+        raise error("INVALID_REQUEST", "each entry in cross_artifact.duration_consistency must be an object")
+    unknown = set(data) - {"artifact_ids", "max_delta_sec"}
+    if unknown:
+        raise error("INVALID_REQUEST", f"unknown fields for duration_consistency rule: {sorted(unknown)}")
+    artifact_ids = data.get("artifact_ids")
+    if not isinstance(artifact_ids, list) or len(artifact_ids) < 2 or not all(isinstance(a, str) and a for a in artifact_ids):
+        raise error("INVALID_REQUEST", "duration_consistency.artifact_ids must be a list of at least 2 non-empty strings")
+    max_delta_sec = data.get("max_delta_sec")
+    if not isinstance(max_delta_sec, (int, float)) or isinstance(max_delta_sec, bool) or max_delta_sec < 0:
+        raise error("INVALID_REQUEST", "duration_consistency.max_delta_sec must be a non-negative number")
+    return ArtifactDurationConsistencyRule(artifact_ids=list(artifact_ids), max_delta_sec=float(max_delta_sec))
+
+
+def _build_dependency_rule(data: Any) -> ArtifactDependencyRule:
+    if not isinstance(data, dict):
+        raise error("INVALID_REQUEST", "each entry in cross_artifact.dependencies must be an object")
+    unknown = set(data) - {"artifact_id", "requires_artifact_id"}
+    if unknown:
+        raise error("INVALID_REQUEST", f"unknown fields for dependency rule: {sorted(unknown)}")
+    artifact_id = data.get("artifact_id")
+    requires_artifact_id = data.get("requires_artifact_id")
+    if not isinstance(artifact_id, str) or not artifact_id:
+        raise error("INVALID_REQUEST", "dependency.artifact_id must be a non-empty string")
+    if not isinstance(requires_artifact_id, str) or not requires_artifact_id:
+        raise error("INVALID_REQUEST", "dependency.requires_artifact_id must be a non-empty string")
+    return ArtifactDependencyRule(artifact_id=artifact_id, requires_artifact_id=requires_artifact_id)
+
+
+def _build_cross_artifact_rule(data: Any) -> Optional[CrossArtifactRule]:
+    if data is None:
+        return None
+    if not isinstance(data, dict):
+        raise error("INVALID_REQUEST", "rule payload for CrossArtifactRule must be an object")
+    unknown = set(data) - {"duration_consistency", "dependencies"}
+    if unknown:
+        raise error("INVALID_REQUEST", f"unknown fields for CrossArtifactRule: {sorted(unknown)}")
+    duration_data = data.get("duration_consistency", [])
+    if not isinstance(duration_data, list):
+        raise error("INVALID_REQUEST", "cross_artifact.duration_consistency must be a list")
+    dependency_data = data.get("dependencies", [])
+    if not isinstance(dependency_data, list):
+        raise error("INVALID_REQUEST", "cross_artifact.dependencies must be a list")
+    return CrossArtifactRule(
+        duration_consistency=[_build_duration_consistency_rule(d) for d in duration_data],
+        dependencies=[_build_dependency_rule(d) for d in dependency_data],
+    )
+
+
 def _build_delivery_package_rule(data: Optional[Dict[str, Any]]) -> Optional[DeliveryPackageRule]:
     if data is None:
         return None
     if not isinstance(data, dict):
         raise error("INVALID_REQUEST", "rule payload for DeliveryPackageRule must be an object")
-    unknown = set(data) - {"artifacts"}
+    unknown = set(data) - {"artifacts", "cross_artifact"}
     if unknown:
         raise error("INVALID_REQUEST", f"unknown fields for DeliveryPackageRule: {sorted(unknown)}")
     artifacts_data = data.get("artifacts", [])
@@ -152,7 +212,10 @@ def _build_delivery_package_rule(data: Optional[Dict[str, Any]]) -> Optional[Del
     ids = [a.artifact_id for a in artifact_rules]
     if len(ids) != len(set(ids)):
         raise error("INVALID_REQUEST", "rules.delivery_package.artifacts has duplicate artifact_id values")
-    return DeliveryPackageRule(artifacts=artifact_rules)
+    return DeliveryPackageRule(
+        artifacts=artifact_rules,
+        cross_artifact=_build_cross_artifact_rule(data.get("cross_artifact")),
+    )
 
 
 def _build_artifact(item: Any) -> DeliveryArtifact:

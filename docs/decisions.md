@@ -167,3 +167,43 @@ The existing `delivery` kind is not deprecated and is not planned to be:
 it remains the right shape for "one video, optionally with one subtitle
 companion," and `delivery_package` is additive for the N-artifact case,
 not a replacement.
+
+## ADR-011: cross-artifact validation is typed relationship rules over already-gathered measurements, never string comparison or LLM judgment
+
+Phase 2 (`feature/cross-artifact-qc`) adds the first checks that compare
+*different* artifacts in a `delivery_package` against each other -
+duration consistency, and "if artifact A is present, artifact B must be
+too." The evolution plan is explicit that this must never become simple
+string comparison or LLM judgment; the design keeps that boundary by
+construction:
+
+- Both new rule types (`ArtifactDurationConsistencyRule`,
+  `ArtifactDependencyRule`) are typed dataclasses under a new
+  `CrossArtifactRule` (`rules.delivery_package.cross_artifact`), following
+  the exact same "caller-supplied typed expectation, no hard-coded
+  policy" shape as every other `Rule` in this skill (ADR-002, ADR-005).
+  There is no free-text expression field anywhere in either rule - a
+  duration rule names `artifact_ids` and a numeric `max_delta_sec`; a
+  dependency rule names two artifact ids. Nothing here is evaluated as
+  code (STEP 10's `eval`/`exec` ban was never at risk, but it is worth
+  stating plainly: comparing typed fields is all `_evaluate_cross_artifact`
+  does).
+- The comparison itself operates on values already produced by the
+  existing, unchanged per-artifact measurement functions
+  (`container.duration_sec` for video/audio, `subtitle.duration_sec` for
+  subtitle) - it does not re-read files, re-parse anything, or introduce
+  a new measurement source. Cross-artifact validation is purely a second
+  pass over data that was already OBSERVED.
+- A duration comparison with a genuinely unmeasurable side is `UNKNOWN`,
+  never a guessed `PASS` or a false `FAIL` - the same guard
+  `_equality_check`/`_unknown_check` already apply everywhere else in
+  this file (ADR guidance carried forward, not a new exception for this
+  feature).
+- This still is not, and must never become, a place to compare anything
+  *semantic* (does the subtitle's wording match the video's content,
+  does the thumbnail "look like" the video) - that would require exactly
+  the AI/LLM judgment this skill is built to exclude (see `not_provided`
+  in `contract.py`). Duration and presence are the only relationships
+  implemented here because they are the only ones expressible as a typed
+  numeric/boolean comparison over existing measurements; anything else
+  stays out of scope until it can be expressed the same way.

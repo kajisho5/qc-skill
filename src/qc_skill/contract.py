@@ -17,7 +17,17 @@ from typing import Any, Dict
 from . import CONTRACT_VERSION, PACKAGE_NAME, SKILL_ID, VERSION
 from .capabilities import REQUIRED_FILTERS, detect_capabilities
 from .errors import ERROR_CODES
-from .rules import AudioRule, DeliveryArtifactRule, DeliveryPackageRule, DeliveryRule, SubtitleRule, VideoRule
+from .rules import (
+    ArtifactDependencyRule,
+    ArtifactDurationConsistencyRule,
+    AudioRule,
+    CrossArtifactRule,
+    DeliveryArtifactRule,
+    DeliveryPackageRule,
+    DeliveryRule,
+    SubtitleRule,
+    VideoRule,
+)
 from .schemas import VALID_ARTIFACT_TYPES
 
 SUPPORTED_OPERATIONS = ["inspect", "check", "validate"]
@@ -72,6 +82,7 @@ SUPPORTED_CHECKS = [
     "delivery.file_size_within_limit", "delivery.extension_matches_expected", "delivery.container_matches_expected",
     "delivery_package.artifact_present", "delivery_package.artifact_size_within_limit",
     "delivery_package.artifact_extension_matches_expected",
+    "delivery_package.duration_consistent", "delivery_package.dependency_satisfied",
 ]
 
 SUPPORTED_FORMATS = {
@@ -128,6 +139,8 @@ FINDING_CATALOG = [
     ("DELIVERY_PACKAGE_ARTIFACT_MISSING", "FAIL"),
     ("DELIVERY_PACKAGE_ARTIFACT_TOO_SMALL", "FAIL"),
     ("DELIVERY_PACKAGE_ARTIFACT_EXTENSION_MISMATCH", "FAIL"),
+    ("DELIVERY_PACKAGE_DURATION_MISMATCH", "FAIL"),
+    ("DELIVERY_PACKAGE_DEPENDENCY_MISSING", "FAIL"),
 ]
 
 _CATEGORY_PREFIXES = {"VIDEO": "video", "AUDIO": "audio", "SUBTITLE": "subtitle", "DELIVERY": "delivery"}
@@ -153,6 +166,9 @@ NOT_PROVIDED = [
 _NESTED_RULE_NAMES = {
     VideoRule: "video", AudioRule: "audio", SubtitleRule: "subtitle",
     DeliveryArtifactRule: "delivery_package_artifact",
+    CrossArtifactRule: "delivery_package_cross_artifact",
+    ArtifactDurationConsistencyRule: "delivery_package_duration_consistency",
+    ArtifactDependencyRule: "delivery_package_dependency",
 }
 
 
@@ -188,6 +204,9 @@ def rules_contract_schema() -> Dict[str, Any]:
         "delivery": _rule_schema(DeliveryRule),
         "delivery_package": _rule_schema(DeliveryPackageRule),
         "delivery_package_artifact": _rule_schema(DeliveryArtifactRule),
+        "delivery_package_cross_artifact": _rule_schema(CrossArtifactRule),
+        "delivery_package_duration_consistency": _rule_schema(ArtifactDurationConsistencyRule),
+        "delivery_package_dependency": _rule_schema(ArtifactDependencyRule),
     }
 
 
