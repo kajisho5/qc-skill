@@ -30,7 +30,8 @@ with its category and default severity.
 | `video.color_range`, `video.color_space`, `video.color_transfer`, `video.color_primaries`, `video.field_order` | ffprobe | `null` when the container doesn't carry it - never guessed |
 | `video.black_segments` | ffmpeg `blackdetect` | `[{start, end, duration}]` |
 | `video.freeze_segments` | ffmpeg `freezedetect` | a segment still frozen at end-of-stream has `end: null, duration: null` (not fabricated) |
-| `video.decoded_frame_count`, `video.decode_error_count`, `video.decode_errors`, `video.frame_count_delta` | ffmpeg full decode | one decode pass produces black/freeze/integrity together |
+| `video.luminance_excursions` | ffmpeg `signalstats` | `[{start, end, duration, min_y, max_y}]` - contiguous runs where Y fell outside `[luminance_legal_min, luminance_legal_max]` (default 16/235); a literal per-frame pixel readout, not a heuristic classifier (ADR-013) |
+| `video.decoded_frame_count`, `video.decode_error_count`, `video.decode_errors`, `video.frame_count_delta` | ffmpeg full decode | one decode pass produces black/freeze/luminance/integrity together |
 
 **Baseline checks** (always run for `check`/`validate`, no rule needed):
 
@@ -50,6 +51,17 @@ with its category and default severity.
 | `video.aspect_ratio_matches_expected` | `expected_aspect_ratio` | `VIDEO_ASPECT_MISMATCH` |
 | `video.black_frames_within_tolerance` | `max_single_black_sec`, `max_total_black_sec` | `VIDEO_BLACK_FRAMES_EXCEEDED` |
 | `video.freeze_frames_within_tolerance` | `max_single_freeze_sec`, `max_total_freeze_sec` | `VIDEO_FREEZE_EXCEEDED` (or `UNKNOWN` if an unresolved freeze-to-EOF segment exists and no violation was found from the resolvable segments) |
+| `video.luminance_within_legal_range` | `max_single_luminance_excursion_sec`, `max_total_luminance_excursion_sec` | `VIDEO_LUMINANCE_OUT_OF_RANGE` |
+
+`luminance_legal_min`/`luminance_legal_max` (default 16/235, the
+near-universal legal range for 8-bit limited-range video) are *detection*
+parameters (`parameters`, like `black_pixel_threshold`) - they decide
+what counts as an excursion worth measuring, not whether one is
+acceptable. Whether any excursion is acceptable is always the caller's
+call via `max_single_luminance_excursion_sec`/
+`max_total_luminance_excursion_sec` - qc-skill never asserts that 16-235
+is required (a full-range web/streaming delivery may legitimately use
+0-255).
 
 ## Audio (`kind: "audio"`, and `kind: "delivery"` when an audio stream is present)
 

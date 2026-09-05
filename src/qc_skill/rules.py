@@ -91,6 +91,8 @@ class VideoRule:
     max_total_black_sec: Optional[float] = None
     max_single_freeze_sec: Optional[float] = None
     max_total_freeze_sec: Optional[float] = None
+    max_single_luminance_excursion_sec: Optional[float] = None
+    max_total_luminance_excursion_sec: Optional[float] = None
     max_decode_errors: int = 0  # baseline tolerance; 0 = any decode error fails
 
 
@@ -275,6 +277,31 @@ def evaluate_video(
             f = QCFinding(
                 "VIDEO_FREEZE_EXCEEDED", FindingSeverity.FAIL, "; ".join(violations),
                 evidence={"segments": segments, "total_sec": total, "longest_sec": longest}, measurement_ids=["video.freeze_segments"],
+            )
+            findings.append(f)
+            check.finding_codes.append(f.code)
+        checks.append(check)
+
+    # --- policy: luminance-range excursions (ADR-013) ---
+    if rule.max_single_luminance_excursion_sec is not None or rule.max_total_luminance_excursion_sec is not None:
+        segments = _val(measurements, "video.luminance_excursions") or []
+        durations = [s["duration"] for s in segments]
+        total = sum(durations)
+        longest = max(durations, default=0.0)
+        violations = []
+        if rule.max_single_luminance_excursion_sec is not None and longest > rule.max_single_luminance_excursion_sec:
+            violations.append(f"longest luminance excursion {longest}s exceeds {rule.max_single_luminance_excursion_sec}s")
+        if rule.max_total_luminance_excursion_sec is not None and total > rule.max_total_luminance_excursion_sec:
+            violations.append(f"total luminance excursion duration {total}s exceeds {rule.max_total_luminance_excursion_sec}s")
+        status = QCStatus.FAIL if violations else QCStatus.PASS
+        check = QCCheck(
+            "video.luminance_within_legal_range", "video", status, ["video.luminance_excursions"],
+            evidence={"total_sec": total, "longest_sec": longest},
+        )
+        if violations:
+            f = QCFinding(
+                "VIDEO_LUMINANCE_OUT_OF_RANGE", FindingSeverity.FAIL, "; ".join(violations),
+                evidence={"segments": segments, "total_sec": total, "longest_sec": longest}, measurement_ids=["video.luminance_excursions"],
             )
             findings.append(f)
             check.finding_codes.append(f.code)

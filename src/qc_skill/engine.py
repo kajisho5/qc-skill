@@ -42,6 +42,8 @@ DEFAULT_PARAMETERS: Dict[str, Any] = {
     "black_pixel_threshold": 0.10,
     "freeze_noise_db": -60.0,
     "freeze_min_duration_sec": 1.0,
+    "luminance_legal_min": 16,
+    "luminance_legal_max": 235,
     "silence_threshold_db": -30.0,
     "silence_min_duration_sec": 0.5,
     "clipping_threshold_dbfs": -0.1,
@@ -119,6 +121,8 @@ def _gather_video_measurements(
             black_pixel_threshold=params["black_pixel_threshold"],
             freeze_noise_db=params["freeze_noise_db"],
             freeze_min_duration=params["freeze_min_duration_sec"],
+            luminance_legal_min=params["luminance_legal_min"],
+            luminance_legal_max=params["luminance_legal_max"],
         )
         measurements += result.measurements
     elif v_streams:

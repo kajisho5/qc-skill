@@ -100,6 +100,17 @@ def test_parse_request_accepts_typed_video_rule():
     assert req.video_rule.expected_height == 1080
 
 
+def test_parse_request_accepts_luminance_rule_and_parameters():
+    doc = base_doc(
+        operation="check",
+        rules={"video": {"max_single_luminance_excursion_sec": 1.0, "max_total_luminance_excursion_sec": 3.0}},
+        parameters={"luminance_legal_min": 0, "luminance_legal_max": 255},
+    )
+    req = parse_request(doc)
+    assert req.video_rule.max_single_luminance_excursion_sec == 1.0
+    assert req.parameters["luminance_legal_max"] == 255
+
+
 def test_parse_request_rejects_invalid_cache_policy():
     doc = base_doc(cache_policy="sometimes")
     with pytest.raises(QCError) as exc:

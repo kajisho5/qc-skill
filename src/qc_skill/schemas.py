@@ -48,6 +48,7 @@ VALID_ARTIFACT_TYPES = {"video", "audio", "subtitle", "thumbnail", "metadata", "
 _ALLOWED_PARAMETER_KEYS = {
     "black_min_duration_sec", "black_pixel_threshold",
     "freeze_noise_db", "freeze_min_duration_sec",
+    "luminance_legal_min", "luminance_legal_max",
     "silence_threshold_db", "silence_min_duration_sec", "clipping_threshold_dbfs",
     "max_line_length", "max_cue_duration_sec", "max_gap_sec",
 }

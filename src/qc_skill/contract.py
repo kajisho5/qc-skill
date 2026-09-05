@@ -41,7 +41,7 @@ SUPPORTED_VIDEO_MEASUREMENTS = [
     "video.stream_present", "video.stream_count", "video.codec", "video.width", "video.height",
     "video.aspect_ratio", "video.frame_rate", "video.frame_count", "video.pixel_format",
     "video.color_range", "video.color_space", "video.color_transfer", "video.color_primaries", "video.field_order",
-    "video.black_segments", "video.freeze_segments", "video.decoded_frame_count",
+    "video.black_segments", "video.freeze_segments", "video.luminance_excursions", "video.decoded_frame_count",
     "video.decode_error_count", "video.decode_errors", "video.frame_count_delta",
 ]
 
@@ -73,6 +73,7 @@ SUPPORTED_CHECKS = [
     "video.stream_present", "video.decodes_without_errors", "video.resolution_matches_expected",
     "video.frame_rate_matches_expected", "video.codec_matches_expected", "video.pixel_format_matches_expected",
     "video.aspect_ratio_matches_expected", "video.black_frames_within_tolerance", "video.freeze_frames_within_tolerance",
+    "video.luminance_within_legal_range",
     "audio.stream_present_matches_expected", "audio.decodes_without_errors", "audio.no_clipping",
     "audio.sample_rate_matches_expected", "audio.channels_match_expected", "audio.channel_layout_matches_expected",
     "audio.leading_silence_within_tolerance", "audio.trailing_silence_within_tolerance",
@@ -111,6 +112,7 @@ FINDING_CATALOG = [
     ("VIDEO_ASPECT_MISMATCH", "FAIL"),
     ("VIDEO_BLACK_FRAMES_EXCEEDED", "FAIL"),
     ("VIDEO_FREEZE_EXCEEDED", "FAIL"),
+    ("VIDEO_LUMINANCE_OUT_OF_RANGE", "FAIL"),
     ("AUDIO_STREAM_MISSING", "FAIL"),
     ("AUDIO_STREAM_UNEXPECTED", "FAIL"),
     ("AUDIO_DECODE_ERROR", "FAIL"),
@@ -264,6 +266,7 @@ def skill_contract() -> Dict[str, Any]:
         "parameters": sorted(
             {
                 "black_min_duration_sec", "black_pixel_threshold", "freeze_noise_db", "freeze_min_duration_sec",
+                "luminance_legal_min", "luminance_legal_max",
                 "silence_threshold_db", "silence_min_duration_sec", "clipping_threshold_dbfs",
                 "max_line_length", "max_cue_duration_sec", "max_gap_sec",
             }
