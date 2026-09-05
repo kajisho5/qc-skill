@@ -255,3 +255,63 @@ qc-skill deliberately does not adopt, wrap, or reimplement any of these:
   correct (that is still the agent's `Decision`, unchanged since ADR-001).
   qc-skill only ever compares: a supplied `TimelineSegment` list, a
   supplied source-cue list, and observed delivery-timeline cue timing.
+
+## ADR-013: luminance-range excursions via `signalstats` (deterministic pixel min/max), not `idet` (a probabilistic classifier)
+
+Phase 4 (`feature/visual-defect-qc`) is the first of the "visual defect
+evidence" additions the evolution plan describes (STEP: "do not
+reimplement ffmpeg-skill/media-analysis-skill capability - reuse as
+adapter/measurement; implement incrementally, not all at once").
+Interlace detection (ffmpeg's `idet` filter) was tried first and
+rejected based on direct measurement, not assumption:
+
+- `idet` classifies each frame as TFF/BFF/Progressive/Undetermined using
+  a field-difference heuristic. Tested against this repo's own
+  `testsrc2`-based fixture pattern (the same generator `clean.mp4`/
+  `black.mp4`/`freeze.mp4` already use), a genuinely progressive 25fps
+  clip was classified **TFF: 42, Progressive: 8** (out of 50 frames) -
+  a false-positive rate that would make a `video.interlacing_matches_expected`
+  check actively wrong on ordinary progressive content, not just
+  occasionally uncertain. A `tinterlace`-generated genuinely-interlaced
+  clip was correctly classified (TFF: 25/25), so the filter is not
+  useless - but its false-positive rate on common synthetic/high-motion
+  progressive content is high enough that shipping a PASS/FAIL verdict
+  on top of it would violate this skill's "never fabricate a measurement"
+  standard (STEP 5/10) by dressing up a shaky heuristic as a confident
+  verdict. This is recorded here specifically so a future session does
+  not re-attempt the same approach without knowing why it was rejected.
+- `signalstats` (`YMIN`/`YMAX` per frame) is not a classifier - it is a
+  literal per-frame pixel value readout, verified against deliberately
+  constructed illegal-range fixtures (`lutyuv=y=250` / `y=5`, both
+  outside the legal 16-235 range for 8-bit limited-range video):
+  `signalstats` reported `YMAX=250` / `YMIN=5` exactly, with zero
+  ambiguity. This is the kind of measurement this skill can stand behind.
+
+Design, following the same detection-vs-policy split as black/freeze
+detection (ADR-005):
+
+- **Detection parameters** (sensible universal default, not a policy
+  choice): `luminance_legal_min`/`luminance_legal_max` (16/235 - the
+  near-universal legal range for 8-bit limited-range Rec.601/709 video),
+  used only to decide what counts as an "excursion" worth recording as a
+  segment. This mirrors `black_pixel_threshold`/`freeze_noise_db`
+  exactly: a detection default is fine because it does not assert
+  anything is *unacceptable*, only what is *worth measuring*.
+- **Measurement**: `video.luminance_excursions` - `[{start, end,
+  duration, min_y, max_y}]`, built the same way `black_segments`/
+  `freeze_segments` already are (contiguous runs of qualifying frames
+  merged into segments, from the same single decode pass - ADR-006 still
+  holds, `signalstats,metadata=print` is added to the existing filter
+  chain, not a second decode). A raw per-frame list was rejected as a
+  measurement shape - unlike black/freeze (typically sparse events), a
+  multi-hour delivery could have per-frame data for every frame, an
+  unbounded and mostly-uninformative payload; segments are exactly as
+  informative and bounded the same way black/freeze already are.
+- **Policy checks** (no default - "no opinion" until the caller says so,
+  per ADR-005): `max_single_luminance_excursion_sec`/
+  `max_total_luminance_excursion_sec` on `VideoRule`, evaluated only when
+  set, exactly mirroring `max_single_black_sec`/`max_total_black_sec`.
+  Whether *any* excursion is acceptable is a delivery-context decision
+  (broadcast-safe vs. full-range web/streaming delivery legitimately
+  differ) - qc-skill still never asserts "16-235 is required," only "here
+  is where and how far outside 16-235 the signal went, if you care."

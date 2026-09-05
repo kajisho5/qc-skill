@@ -111,6 +111,27 @@ def build_all(out_dir: Path) -> Dict[str, Path]:
     )
     paths["freeze"] = freeze
 
+    # illegal_luminance.mp4: 1s of legal-range gray, then 1s forced to Y=250
+    # (superwhite, illegal for 8-bit limited-range video) via lutyuv - a
+    # deliberate, exact pixel value, not a guess (see ADR-013: verified
+    # against `signalstats` directly before this fixture was written).
+    legal_part = out_dir / "_legal.mp4"
+    illegal_part = out_dir / "_illegal.mp4"
+    illegal_luminance = out_dir / "illegal_luminance.mp4"
+    _run("-f", "lavfi", "-i", "color=gray:size=320x240:rate=25:duration=1", "-pix_fmt", "yuv420p", str(legal_part))
+    _run(
+        "-f", "lavfi", "-i", "color=gray:size=320x240:rate=25:duration=1",
+        "-vf", "lutyuv=y=250", "-pix_fmt", "yuv420p", str(illegal_part),
+    )
+    _run(
+        "-i", str(legal_part), "-i", str(illegal_part),
+        "-filter_complex", "[0:v][1:v]concat=n=2:v=1:a=0[out]", "-map", "[out]",
+        "-c:v", "libx264", "-pix_fmt", "yuv420p", str(illegal_luminance),
+    )
+    paths["illegal_luminance"] = illegal_luminance
+    for name in ("_legal.mp4", "_illegal.mp4"):
+        (out_dir / name).unlink(missing_ok=True)
+
     # corrupted.mp4: clean.mp4 with a run of zero bytes stamped into the
     # middle of the file, guaranteed to land inside compressed frame data.
     corrupted = out_dir / "corrupted.mp4"

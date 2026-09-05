@@ -45,6 +45,11 @@ source-to-delivery `timeline` mapping after a trim/concat/speed edit -
 qc-skill never constructs that mapping itself, only compares against
 one the caller supplies. See `docs/checks.md`.
 
+`VideoRule.max_single_luminance_excursion_sec`/
+`max_total_luminance_excursion_sec` check for video signal outside the
+legal 8-bit range (default 16-235) via ffmpeg's `signalstats` (a literal
+per-frame pixel readout, not a heuristic classifier). See `docs/checks.md`.
+
 ## Example
 
 ```json
