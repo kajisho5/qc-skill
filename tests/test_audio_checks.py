@@ -1,30 +1,27 @@
-import subprocess
-
+from qc_skill.measurements.audio import _parse_astats
 from tests.helpers import checks_by_id, measurements_by_id, run
 
 
-def test_diagnostic_raw_ffmpeg_astats_output_on_loud_clipping(media):
-    """Temporary diagnostic: dump the raw ffmpeg stderr for loud_clipping.wav
-    so a CI-only failure (observed on windows-latest) can be root-caused
-    from the assertion message instead of guessed at. Safe to delete once
-    test_clipping_detected_on_loud_clipping_fixture is green everywhere.
+def test_parse_astats_is_independent_of_pointer_notation():
+    """ffmpeg's context tag is `[Parsed_astats_N @ %p]`, and `%p` formatting
+    is a libc/CRT detail: glibc prints a lowercase-hex pointer prefixed
+    with '0x', while MSVCRT (observed on windows-latest CI) prints
+    uppercase hex with no '0x' prefix at all. The parser must not assume
+    either representation - it only needs the '@' separator and a closing
+    ']', never the pointer's actual digits.
     """
 
-    result = subprocess.run(
-        [
-            "ffmpeg", "-hide_banner", "-nostdin", "-v", "info",
-            "-protocol_whitelist", "file", "-i", str(media["loud_clipping"]),
-            "-af", "astats=metadata=0:reset=0,ebur128=peak=true,silencedetect=n=-30dB:d=0.5",
-            "-f", "null", "-",
-        ],
-        capture_output=True,
-        text=True,
+    windows_style = (
+        "[Parsed_astats_0 @ 00000238A1B2C3D0] Channel: 1\n"
+        "[Parsed_astats_0 @ 00000238A1B2C3D0] Peak level dB: 0.000000\n"
+        "[Parsed_astats_0 @ 00000238A1B2C3D0] RMS level dB: -3.010300\n"
+        "[Parsed_astats_0 @ 00000238A1B2C3D0] Overall\n"
+        "[Parsed_astats_0 @ 00000238A1B2C3D0] Peak level dB: 0.000000\n"
+        "[Parsed_astats_0 @ 00000238A1B2C3D0] Number of samples: 88200\n"
     )
-    assert "Peak level dB" in result.stderr, (
-        f"returncode={result.returncode!r}\n"
-        f"stdout={result.stdout!r}\n"
-        f"stderr={result.stderr!r}"
-    )
+    result = _parse_astats(windows_style)
+    assert result["overall"]["Peak level dB"] == 0.0
+    assert result["channels"][1]["Peak level dB"] == 0.0
 
 
 def test_inspect_clean_audio_measurements(media, workspace):

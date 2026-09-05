@@ -25,7 +25,7 @@ from ._decode_errors import extract_decode_errors
 _SILENCE_START_RE = re.compile(r"silence_start:\s*(-?[\d.]+)")
 _SILENCE_END_RE = re.compile(r"silence_end:\s*(-?[\d.]+)\s*\|\s*silence_duration:\s*([\d.]+)")
 
-_ASTATS_LINE_RE = re.compile(r"\[Parsed_astats_\d+ @ 0x[0-9a-f]+\]\s*(.+)$")
+_ASTATS_LINE_RE = re.compile(r"\[Parsed_astats_\d+ @[^\]]*\]\s*(.+)$")
 _ASTATS_CHANNEL_RE = re.compile(r"^Channel:\s*(\d+)$")
 
 _INTEGRATED_RE = re.compile(r"\bI:\s*(-?[\d.]+|-inf)\s*LUFS")
