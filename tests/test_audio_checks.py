@@ -1,4 +1,30 @@
+import subprocess
+
 from tests.helpers import checks_by_id, measurements_by_id, run
+
+
+def test_diagnostic_raw_ffmpeg_astats_output_on_loud_clipping(media):
+    """Temporary diagnostic: dump the raw ffmpeg stderr for loud_clipping.wav
+    so a CI-only failure (observed on windows-latest) can be root-caused
+    from the assertion message instead of guessed at. Safe to delete once
+    test_clipping_detected_on_loud_clipping_fixture is green everywhere.
+    """
+
+    result = subprocess.run(
+        [
+            "ffmpeg", "-hide_banner", "-nostdin", "-v", "info",
+            "-protocol_whitelist", "file", "-i", str(media["loud_clipping"]),
+            "-af", "astats=metadata=0:reset=0,ebur128=peak=true,silencedetect=n=-30dB:d=0.5",
+            "-f", "null", "-",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert "Peak level dB" in result.stderr, (
+        f"returncode={result.returncode!r}\n"
+        f"stdout={result.stdout!r}\n"
+        f"stderr={result.stderr!r}"
+    )
 
 
 def test_inspect_clean_audio_measurements(media, workspace):
@@ -46,7 +72,8 @@ def test_clipping_detected_on_loud_clipping_fixture(media, workspace):
     doc = {"operation": "check", "kind": "audio", "input": str(media["loud_clipping"])}
     resp = run(doc, workspace)
     m = measurements_by_id(resp)
-    assert m["audio.clipping_detected"]["value"] is True
+    debug = {k: v.get("value") for k, v in m.items() if k.startswith("audio.")}
+    assert m["audio.clipping_detected"]["value"] is True, f"measurements: {debug}"
     checks = checks_by_id(resp)
     assert checks["audio.no_clipping"]["status"] == "FAIL"
     codes = {f["code"] for f in resp["report"]["findings"]}
