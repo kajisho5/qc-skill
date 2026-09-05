@@ -82,3 +82,88 @@ matches what was stored (`QCReportCache.get`). This mirrors
 hand-edited or corrupted cache file cannot be reported back as a
 successful QC verdict - STEP 21 of the task spec is explicit that reuse
 must re-verify report integrity, not just re-verify that a file exists.
+
+## ADR-009: qc-skill evolves toward multi-skill pipeline QC, not toward being a better single-file checker
+
+Full evidence for this decision is in `docs/qc-evolution-gap-analysis.md`
+(capability matrix against QCTools, MediaConch, VMAF, rendercheck,
+uploadcheck-mcp, Kinocut, plus an ecosystem read of all 8 neighboring
+repos). Summary of the decision:
+
+- "Agent-native QC" is **not** a differentiator - `uploadcheck-mcp` and
+  Kinocut already ship that, and copying either would not close a real
+  gap. The genuinely open gaps, confirmed by direct comparison, are:
+  cross-artifact validation across a *multi-skill* pipeline's
+  heterogeneous outputs; genuine timeline-awareness of edit history
+  (source-timeline -> delivery-timeline, not just source-file checks);
+  deterministic evidence chained across *multiple* tools' outputs, not
+  one tool's own steps; and an orchestrator-facing evidence graph tying a
+  QC verdict into the agent's Decision loop.
+- The ecosystem read confirmed there is no existing owner for any of
+  these: every execution skill (`color-grading-skill`,
+  `motion-graphics-skill`, `thumbnail-skill`, `video-editing-skill`,
+  `subtitle-skill`) does only narrow, creation-time self-verification of
+  its own output; nothing in the ecosystem validates *across* skills'
+  outputs today.
+- This is additive to, not a replacement for, everything qc-skill already
+  does. ADR-001 through ADR-008 stand unchanged: qc-skill still never
+  produces a Decision, still keeps Measurement/Rule/Finding separate,
+  still never hard-codes policy. The evolution is in *what* gets
+  measured and checked (multiple related artifacts, and timing across an
+  edit history) - not in who decides what to do about a `FAIL`.
+- Explicit non-goals, restated because they are exactly what "cross-
+  artifact" and "timeline-aware" QC could be mistaken for scope creep
+  into: no subjective/LLM quality judgment of any kind; no editing
+  algorithm implemented inside qc-skill (Phase 3 may only *compare*
+  against an existing timeline record, never construct or reconstruct
+  one); no image-recognition AI embedded directly (any future visual-
+  layout finding must arrive via `media-analysis-skill`'s
+  `Observation` -> `video-production-agent`'s QC specification, never a
+  model call from inside qc-skill itself); no re-implementation of
+  detection capability that already exists in `ffmpeg-skill`/
+  `media-analysis-skill` - those are reused as measurement sources, not
+  duplicated.
+
+## ADR-010: multi-artifact delivery is a new kind (`delivery_package`), not an extension of the existing `delivery` kind
+
+Phase 1 needs to validate N named artifacts (e.g. `final.mp4` + `ja.srt` +
+`thumbnail.png` + `metadata.json`) as one delivery unit. Two ways to get
+there: extend `DeliveryRule`/`kind: "delivery"` to accept an open-ended
+artifact list, or add a new kind alongside it. Decision: **new kind**,
+`kind: "delivery_package"`, with its own typed `DeliveryPackageRule` and a
+`DeliveryArtifact` reference type (`artifact_id`, `artifact_type`, `path`,
+`fingerprint`, `required`) - modeled on qc-skill's own existing dataclass/
+rule conventions, not on any other repo's naming.
+
+Reasons, in order of weight:
+
+1. **Backward compatibility with a contract another skill has already
+   pinned.** `video-production-agent`'s adapter
+   (`tools/qc/adapter.py`) checks compatibility against a frozen
+   `contract_0.1.0.json` snapshot via a `"0.1."` version-prefix gate.
+   Changing what `kind: "delivery"` *means* - even additively - risks that
+   existing, already-shipped integration in a way a new, separate kind
+   cannot: old callers of `kind: "delivery"` get exactly the same checks,
+   measurements and rule shape they always have, forever.
+2. **No naming precedent to follow or collide with.** The ecosystem read
+   confirmed no "delivery package" concept exists anywhere else in this
+   ecosystem for `delivery_package` to conflict with, and no existing
+   multi-artifact convention it should instead match.
+3. **`DeliveryRule` is single-primary-artifact-plus-optional-companions by
+   design** (`video`/`audio`/`subtitle` sub-rules, `require_video`/
+   `require_audio`/`require_subtitle` flags) - that shape does not extend
+   cleanly to an open-ended, caller-named list of arbitrary artifact
+   types (e.g. a delivery with two subtitle languages, or a delivery with
+   no video at all). A new rule type avoids bending the existing one past
+   what it was designed to express.
+4. **Keeps the qc-skill <-> agent seam typed and one-directional.**
+   `DeliveryPackageRule`/`DeliveryArtifact` are the typed boundary object
+   this kind accepts; qc-skill continues to never import
+   `ProductionPlan`/`video_production_agent` types, and the agent-side
+   adapter continues to translate its own richer model down to this
+   shape, exactly as it already does for `kind: "delivery"`.
+
+The existing `delivery` kind is not deprecated and is not planned to be:
+it remains the right shape for "one video, optionally with one subtitle
+companion," and `delivery_package` is additive for the N-artifact case,
+not a replacement.
