@@ -79,15 +79,19 @@ def build_all(out_dir: Path) -> Dict[str, Path]:
     paths["corrupted"] = corrupted
 
     # silence_gap.wav: 2s tone, 2s silence, 2s tone -> one internal silence.
-    # The tone is left at the sine source's default level (~-18 dBFS peak)
-    # so it stays well above the -30dB silencedetect threshold used below.
+    # The tone is generated with aevalsrc at an explicit amplitude (0.3,
+    # about -10.5 dBFS) rather than relying on the `sine` source's default
+    # gain, which is an undocumented implementation detail that has been
+    # observed to differ across ffmpeg builds/platforms - an explicit
+    # amplitude keeps this fixture's level (and therefore its relationship
+    # to the -30dB silencedetect threshold below) deterministic everywhere.
     tone_a = out_dir / "_tone_a.wav"
     silence_b = out_dir / "_silence_b.wav"
     tone_c = out_dir / "_tone_c.wav"
     silence_gap = out_dir / "silence_gap.wav"
-    _run("-f", "lavfi", "-i", "sine=frequency=880:duration=2", "-c:a", "pcm_s16le", str(tone_a))
+    _run("-f", "lavfi", "-i", "aevalsrc=0.3*sin(880*2*PI*t):s=44100:d=2", "-c:a", "pcm_s16le", str(tone_a))
     _run("-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono:duration=2", "-c:a", "pcm_s16le", str(silence_b))
-    _run("-f", "lavfi", "-i", "sine=frequency=880:duration=2", "-c:a", "pcm_s16le", str(tone_c))
+    _run("-f", "lavfi", "-i", "aevalsrc=0.3*sin(880*2*PI*t):s=44100:d=2", "-c:a", "pcm_s16le", str(tone_c))
     _run(
         "-i", str(tone_a), "-i", str(silence_b), "-i", str(tone_c),
         "-filter_complex", "[0:a][1:a][2:a]concat=n=3:v=0:a=1[out]", "-map", "[out]",
@@ -95,13 +99,17 @@ def build_all(out_dir: Path) -> Dict[str, Path]:
     )
     paths["silence_gap"] = silence_gap
 
-    # loud_clipping.wav: sine amplified well past full scale -> digital
-    # clipping. ffmpeg's `sine` source defaults to about -18 dBFS peak, so
-    # +24 dB is needed to drive it to (and past) 0 dBFS.
+    # loud_clipping.wav: an explicit-amplitude sine (2.5, well past the
+    # [-1.0, 1.0] float range) fed straight into a 16-bit PCM encoder,
+    # which hard-clamps every sample to full scale -> guaranteed digital
+    # clipping. Built with aevalsrc rather than `sine=...,volume=NdB` so
+    # the result does not depend on the `sine` source's own default gain,
+    # which is an undocumented implementation detail observed to differ
+    # across ffmpeg builds/platforms (see silence_gap.wav above).
     loud_clipping = out_dir / "loud_clipping.wav"
     _run(
-        "-f", "lavfi", "-i", "sine=frequency=1000:duration=2",
-        "-af", "volume=24dB", "-c:a", "pcm_s16le", str(loud_clipping),
+        "-f", "lavfi", "-i", "aevalsrc=2.5*sin(1000*2*PI*t):s=44100:d=2",
+        "-c:a", "pcm_s16le", str(loud_clipping),
     )
     paths["loud_clipping"] = loud_clipping
 
