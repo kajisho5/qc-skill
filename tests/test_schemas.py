@@ -270,3 +270,49 @@ def test_parse_request_rejects_dependency_missing_field():
     with pytest.raises(QCError) as exc:
         parse_request(doc)
     assert exc.value.code == "INVALID_REQUEST"
+
+
+def test_parse_request_timeline_integrity_rule():
+    doc = base_doc(kind="subtitle", rules={"subtitle": {"timeline_integrity": {
+        "timeline": [{"source_start": 0, "source_end": 10, "delivery_start": 0}],
+        "source_cues": [{"start": 1.0, "end": 2.0}],
+        "tolerance_sec": 0.2,
+    }}})
+    req = parse_request(doc)
+    ti = req.subtitle_rule.timeline_integrity
+    assert ti.timeline[0].source_start == 0
+    assert ti.timeline[0].speed == 1.0  # default
+    assert ti.source_cues[0].start == 1.0
+    assert ti.tolerance_sec == 0.2
+
+
+def test_parse_request_timeline_integrity_defaults():
+    doc = base_doc(kind="subtitle", rules={"subtitle": {"timeline_integrity": {}}})
+    req = parse_request(doc)
+    ti = req.subtitle_rule.timeline_integrity
+    assert ti.timeline == []
+    assert ti.source_cues == []
+    assert ti.tolerance_sec == 0.1
+
+
+def test_parse_request_rejects_unknown_timeline_integrity_field():
+    doc = base_doc(kind="subtitle", rules={"subtitle": {"timeline_integrity": {"bogus": []}}})
+    with pytest.raises(QCError) as exc:
+        parse_request(doc)
+    assert exc.value.code == "INVALID_REQUEST"
+
+
+def test_parse_request_rejects_source_cue_missing_end():
+    doc = base_doc(kind="subtitle", rules={"subtitle": {"timeline_integrity": {
+        "source_cues": [{"start": 1.0}],
+    }}})
+    with pytest.raises(QCError) as exc:
+        parse_request(doc)
+    assert exc.value.code == "INVALID_REQUEST"
+
+
+def test_parse_request_rejects_negative_tolerance_sec():
+    doc = base_doc(kind="subtitle", rules={"subtitle": {"timeline_integrity": {"tolerance_sec": -0.1}}})
+    with pytest.raises(QCError) as exc:
+        parse_request(doc)
+    assert exc.value.code == "INVALID_REQUEST"

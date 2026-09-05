@@ -38,6 +38,13 @@ adds typed relationship checks across the named artifacts:
 `dependencies` (if artifact A is present, artifact B must be too) - never
 a string comparison or semantic/LLM judgment. See `docs/checks.md`.
 
+`rules.subtitle.timeline_integrity` (also reachable via `delivery`'s and
+`delivery_package`'s nested `subtitle` sub-rule) checks whether a
+subtitle's delivery-timeline cue timing still matches a caller-supplied
+source-to-delivery `timeline` mapping after a trim/concat/speed edit -
+qc-skill never constructs that mapping itself, only compares against
+one the caller supplies. See `docs/checks.md`.
+
 ## Example
 
 ```json

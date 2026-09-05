@@ -517,6 +517,47 @@ def evaluate_audio(measurements: MeasurementMap, rule: Optional[AudioRule]) -> T
 
 
 @dataclass
+class TimelineSegment:
+    """One caller-supplied source-to-delivery time mapping (ADR-012).
+
+    qc-skill never constructs, infers, or reconstructs these - they come
+    from whatever the agent already knows about its own edit history.
+    ``[source_start, source_end)`` of the *source* timeline appears in the
+    delivery starting at ``delivery_start``, played at ``speed``x (2.0 =
+    twice as fast, so half the source duration on the delivery timeline).
+    """
+
+    source_start: float
+    source_end: float
+    delivery_start: float
+    speed: float = 1.0
+
+
+@dataclass
+class SourceCue:
+    """One cue's timing as authored against the *source* timeline, before
+    whatever trim/concat/speed edit produced the delivery."""
+
+    start: float
+    end: float
+
+
+@dataclass
+class TimelineIntegrityRule:
+    timeline: List[TimelineSegment] = field(default_factory=list)
+    source_cues: List[SourceCue] = field(default_factory=list)
+    tolerance_sec: float = 0.1
+
+
+def _map_source_to_delivery(timeline: List[TimelineSegment], source_time: float) -> Optional[float]:
+    for segment in timeline:
+        if segment.source_start <= source_time <= segment.source_end:
+            speed = segment.speed or 1.0
+            return segment.delivery_start + (source_time - segment.source_start) / speed
+    return None  # source_time falls in a cut region - not covered by any segment
+
+
+@dataclass
 class SubtitleRule:
     require_subtitle: Optional[bool] = None
     max_line_length: Optional[int] = None
@@ -526,6 +567,65 @@ class SubtitleRule:
     min_coverage_ratio: Optional[float] = None
     allow_overlapping_cues: bool = False
     allow_duplicate_ids: bool = False
+    timeline_integrity: Optional[TimelineIntegrityRule] = None
+
+
+def _evaluate_timeline_integrity(
+    measurements: MeasurementMap, rule: TimelineIntegrityRule
+) -> Tuple[QCCheck, Optional[QCFinding]]:
+    """Does this subtitle's delivery-timeline cue timing match what the
+    caller-supplied ``timeline`` says it should be, given the cue timing
+    the caller asserts existed on the *source* timeline (ADR-012)?
+
+    Only ever compares supplied data against ``subtitle.cues`` (observed
+    fact) - never reconstructs a timeline, never infers which cues were
+    cut.
+    """
+
+    actual_cues = _val(measurements, "subtitle.cues") or []
+
+    if len(actual_cues) != len(rule.source_cues):
+        evidence = {"actual_cue_count": len(actual_cues), "expected_cue_count": len(rule.source_cues)}
+        finding = QCFinding(
+            "SUBTITLE_TIMELINE_CUE_COUNT_MISMATCH", FindingSeverity.FAIL,
+            f"delivery has {len(actual_cues)} cue(s) but the supplied timeline mapping expects {len(rule.source_cues)}",
+            evidence=evidence, measurement_ids=["subtitle.cues"],
+        )
+        check = QCCheck("subtitle.timeline_mapping_matches_source", "subtitle", QCStatus.FAIL, ["subtitle.cues"], evidence=evidence, finding_codes=[finding.code])
+        return check, finding
+
+    mismatches = []
+    unresolved = []
+    for i, (source_cue, actual) in enumerate(zip(rule.source_cues, actual_cues)):
+        expected_start = _map_source_to_delivery(rule.timeline, source_cue.start)
+        expected_end = _map_source_to_delivery(rule.timeline, source_cue.end)
+        if expected_start is None or expected_end is None:
+            unresolved.append(i)
+            continue
+        actual_start, actual_end = actual.get("start"), actual.get("end")
+        if (
+            actual_start is None or actual_end is None
+            or abs(actual_start - expected_start) > rule.tolerance_sec
+            or abs(actual_end - expected_end) > rule.tolerance_sec
+        ):
+            mismatches.append({
+                "cue_index": i,
+                "expected": {"start": expected_start, "end": expected_end},
+                "actual": {"start": actual_start, "end": actual_end},
+            })
+
+    evidence = {"mismatches": mismatches, "unresolved_source_cues": unresolved}
+    if mismatches:
+        finding = QCFinding(
+            "SUBTITLE_TIMELINE_MAPPING_MISMATCH", FindingSeverity.FAIL,
+            f"{len(mismatches)} cue(s) do not match their expected delivery-timeline position under the supplied timeline mapping",
+            evidence=evidence, measurement_ids=["subtitle.cues"],
+        )
+        return QCCheck("subtitle.timeline_mapping_matches_source", "subtitle", QCStatus.FAIL, ["subtitle.cues"], evidence=evidence, finding_codes=[finding.code]), finding
+    if unresolved:
+        reason = f"source cue(s) at index {unresolved} fall outside every timeline segment (a cut region) - cannot verify"
+        return QCCheck("subtitle.timeline_mapping_matches_source", "subtitle", QCStatus.UNKNOWN, ["subtitle.cues"], evidence=evidence, reason=reason), None
+    return QCCheck("subtitle.timeline_mapping_matches_source", "subtitle", QCStatus.PASS, ["subtitle.cues"], evidence=evidence), None
 
 
 def evaluate_subtitle(measurements: MeasurementMap, rule: Optional[SubtitleRule]) -> Tuple[List[QCCheck], List[QCFinding]]:
@@ -664,6 +764,12 @@ def evaluate_subtitle(measurements: MeasurementMap, rule: Optional[SubtitleRule]
                 findings.append(f)
                 check.finding_codes.append(f.code)
             checks.append(check)
+
+    if rule.timeline_integrity is not None:
+        check, finding = _evaluate_timeline_integrity(measurements, rule.timeline_integrity)
+        checks.append(check)
+        if finding is not None:
+            findings.append(finding)
 
     return checks, findings
 
