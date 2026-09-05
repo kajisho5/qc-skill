@@ -1,0 +1,132 @@
+import pytest
+
+from qc_skill.errors import QCError
+from qc_skill.schemas import parse_request
+
+
+def base_doc(**overrides):
+    doc = {"operation": "inspect", "kind": "video", "input": "a.mp4"}
+    doc.update(overrides)
+    return doc
+
+
+def test_parse_request_minimal_ok():
+    req = parse_request(base_doc())
+    assert req.operation == "inspect"
+    assert req.kind == "video"
+    assert req.cache_policy == "use"
+
+
+@pytest.mark.parametrize("key", ["command", "commands", "argv", "args", "shell", "cmd", "exec", "executable", "filter", "filter_complex", "env", "environment"])
+def test_parse_request_rejects_forbidden_keys_top_level(key):
+    doc = base_doc(**{key: "anything"})
+    with pytest.raises(QCError) as exc:
+        parse_request(doc)
+    assert exc.value.code == "INVALID_REQUEST"
+
+
+def test_parse_request_rejects_forbidden_keys_nested():
+    doc = base_doc(parameters={"nested": {"shell": True}})
+    with pytest.raises(QCError):
+        parse_request(doc)
+
+
+def test_parse_request_rejects_unknown_top_level_key():
+    doc = base_doc(bogus="x")
+    with pytest.raises(QCError) as exc:
+        parse_request(doc)
+    assert exc.value.code == "INVALID_REQUEST"
+
+
+def test_parse_request_rejects_non_object():
+    with pytest.raises(QCError) as exc:
+        parse_request(["not", "an", "object"])
+    assert exc.value.code == "INVALID_REQUEST"
+
+
+def test_parse_request_rejects_bad_operation():
+    doc = base_doc(operation="delete_everything")
+    with pytest.raises(QCError) as exc:
+        parse_request(doc)
+    assert exc.value.code == "UNSUPPORTED_OPERATION"
+
+
+def test_parse_request_rejects_bad_kind():
+    doc = base_doc(kind="thumbnail")
+    with pytest.raises(QCError) as exc:
+        parse_request(doc)
+    assert exc.value.code == "INVALID_REQUEST"
+
+
+def test_parse_request_rejects_missing_input():
+    doc = base_doc(input="")
+    with pytest.raises(QCError) as exc:
+        parse_request(doc)
+    assert exc.value.code == "MISSING_INPUT"
+
+
+def test_parse_request_rejects_missing_input_key():
+    doc = {"operation": "inspect", "kind": "video"}
+    with pytest.raises(QCError) as exc:
+        parse_request(doc)
+    assert exc.value.code == "MISSING_INPUT"
+
+
+def test_parse_request_rejects_unknown_parameter_key():
+    doc = base_doc(parameters={"totally_made_up": 1})
+    with pytest.raises(QCError) as exc:
+        parse_request(doc)
+    assert exc.value.code == "INVALID_REQUEST"
+
+
+def test_parse_request_rejects_unknown_rule_section():
+    doc = base_doc(rules={"bogus_kind": {}})
+    with pytest.raises(QCError) as exc:
+        parse_request(doc)
+    assert exc.value.code == "INVALID_REQUEST"
+
+
+def test_parse_request_rejects_unknown_rule_field():
+    doc = base_doc(rules={"video": {"expected_width": 100, "not_a_real_field": True}})
+    with pytest.raises(QCError) as exc:
+        parse_request(doc)
+    assert exc.value.code == "INVALID_REQUEST"
+
+
+def test_parse_request_accepts_typed_video_rule():
+    doc = base_doc(operation="check", rules={"video": {"expected_width": 1920, "expected_height": 1080}})
+    req = parse_request(doc)
+    assert req.video_rule.expected_width == 1920
+    assert req.video_rule.expected_height == 1080
+
+
+def test_parse_request_rejects_invalid_cache_policy():
+    doc = base_doc(cache_policy="sometimes")
+    with pytest.raises(QCError) as exc:
+        parse_request(doc)
+    assert exc.value.code == "INVALID_REQUEST"
+
+
+def test_parse_request_rejects_negative_timeout():
+    doc = base_doc(timeout=-5)
+    with pytest.raises(QCError) as exc:
+        parse_request(doc)
+    assert exc.value.code == "INVALID_TIME_RANGE"
+
+
+def test_parse_request_rejects_bool_timeout():
+    doc = base_doc(timeout=True)
+    with pytest.raises(QCError) as exc:
+        parse_request(doc)
+    assert exc.value.code == "INVALID_TIME_RANGE"
+
+
+def test_parse_request_nested_delivery_rule():
+    doc = base_doc(
+        kind="delivery",
+        operation="validate",
+        rules={"delivery": {"expected_extension": "mp4", "video": {"expected_width": 1920}}},
+    )
+    req = parse_request(doc)
+    assert req.delivery_rule.expected_extension == "mp4"
+    assert req.delivery_rule.video.expected_width == 1920
