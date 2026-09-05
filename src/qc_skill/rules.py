@@ -765,8 +765,111 @@ class DeliveryArtifactRule:
 
 
 @dataclass
+class ArtifactDurationConsistencyRule:
+    """N artifacts (by id, e.g. the main video and its subtitle) whose
+    measured durations must agree within a caller-chosen tolerance. Reads
+    ``container.duration_sec`` (video/audio) or ``subtitle.duration_sec``
+    (subtitle) from each named artifact's own already-gathered
+    measurements - never re-reads a file or compares anything semantic.
+    """
+
+    artifact_ids: List[str]
+    max_delta_sec: float
+
+
+@dataclass
+class ArtifactDependencyRule:
+    """If ``artifact_id`` is present, ``requires_artifact_id`` must be too."""
+
+    artifact_id: str
+    requires_artifact_id: str
+
+
+@dataclass
+class CrossArtifactRule:
+    duration_consistency: List[ArtifactDurationConsistencyRule] = field(default_factory=list)
+    dependencies: List[ArtifactDependencyRule] = field(default_factory=list)
+
+
+@dataclass
 class DeliveryPackageRule:
     artifacts: List[DeliveryArtifactRule] = field(default_factory=list)
+    cross_artifact: Optional[CrossArtifactRule] = None
+
+
+def _artifact_duration_sec(amap: MeasurementMap) -> Optional[float]:
+    for measurement_id in ("container.duration_sec", "subtitle.duration_sec"):
+        value = _val(amap, measurement_id)
+        if value is not None:
+            return value
+    return None
+
+
+def _evaluate_cross_artifact(
+    rule: CrossArtifactRule, per_artifact_measurements: Dict[str, MeasurementMap]
+) -> Tuple[List[QCCheck], List[QCFinding]]:
+    checks: List[QCCheck] = []
+    findings: List[QCFinding] = []
+
+    for dc in rule.duration_consistency:
+        durations: Dict[str, float] = {}
+        unresolved: List[str] = []
+        for aid in dc.artifact_ids:
+            duration = _artifact_duration_sec(per_artifact_measurements.get(aid, {}))
+            if duration is None:
+                unresolved.append(aid)
+            else:
+                durations[aid] = duration
+
+        if unresolved:
+            checks.append(
+                _unknown_check(
+                    "delivery_package.duration_consistent", "delivery_package",
+                    f"duration could not be measured for: {unresolved}", [],
+                )
+            )
+            continue
+
+        spread = max(durations.values()) - min(durations.values())
+        status = QCStatus.PASS if spread <= dc.max_delta_sec else QCStatus.FAIL
+        check = QCCheck(
+            "delivery_package.duration_consistent", "delivery_package", status, [],
+            evidence={"durations": durations, "spread_sec": spread, "max_delta_sec": dc.max_delta_sec},
+        )
+        if status == QCStatus.FAIL:
+            f = QCFinding(
+                "DELIVERY_PACKAGE_DURATION_MISMATCH", FindingSeverity.FAIL,
+                f"artifact durations differ by {spread}s (max allowed {dc.max_delta_sec}s): {durations}",
+                evidence={"durations": durations, "spread_sec": spread, "max_delta_sec": dc.max_delta_sec},
+            )
+            findings.append(f)
+            check.finding_codes.append(f.code)
+        checks.append(check)
+
+    for dep in rule.dependencies:
+        present = bool(_val(per_artifact_measurements.get(dep.artifact_id, {}), "delivery_package.artifact_present"))
+        if not present:
+            continue  # the dependent artifact isn't here at all; nothing to enforce
+
+        dep_present = bool(
+            _val(per_artifact_measurements.get(dep.requires_artifact_id, {}), "delivery_package.artifact_present")
+        )
+        status = QCStatus.PASS if dep_present else QCStatus.FAIL
+        check = QCCheck(
+            "delivery_package.dependency_satisfied", "delivery_package", status, [],
+            evidence={"artifact_id": dep.artifact_id, "requires_artifact_id": dep.requires_artifact_id},
+        )
+        if status == QCStatus.FAIL:
+            f = QCFinding(
+                "DELIVERY_PACKAGE_DEPENDENCY_MISSING", FindingSeverity.FAIL,
+                f"artifact {dep.artifact_id!r} is present but its required companion {dep.requires_artifact_id!r} is not",
+                evidence={"artifact_id": dep.artifact_id, "requires_artifact_id": dep.requires_artifact_id},
+            )
+            findings.append(f)
+            check.finding_codes.append(f.code)
+        checks.append(check)
+
+    return checks, findings
 
 
 def evaluate_delivery_package(
@@ -859,5 +962,10 @@ def evaluate_delivery_package(
             c, f = evaluate_subtitle(amap, artifact_rule.subtitle)
             checks += [replace(x, artifact_id=aid) for x in c]
             findings += [replace(x, artifact_id=aid) for x in f]
+
+    if rule.cross_artifact is not None:
+        c, f = _evaluate_cross_artifact(rule.cross_artifact, per_artifact_measurements)
+        checks += c
+        findings += f
 
     return checks, findings

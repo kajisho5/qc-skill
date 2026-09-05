@@ -216,3 +216,57 @@ def test_parse_request_rejects_delivery_package_artifact_rule_without_id():
     with pytest.raises(QCError) as exc:
         parse_request(doc)
     assert exc.value.code == "INVALID_REQUEST"
+
+
+def test_parse_request_cross_artifact_duration_consistency():
+    doc = _package_doc(rules={"delivery_package": {"cross_artifact": {"duration_consistency": [
+        {"artifact_ids": ["a", "b"], "max_delta_sec": 0.5},
+    ]}}})
+    req = parse_request(doc)
+    rule = req.delivery_package_rule.cross_artifact.duration_consistency[0]
+    assert rule.artifact_ids == ["a", "b"]
+    assert rule.max_delta_sec == 0.5
+
+
+def test_parse_request_cross_artifact_dependency():
+    doc = _package_doc(rules={"delivery_package": {"cross_artifact": {"dependencies": [
+        {"artifact_id": "a", "requires_artifact_id": "b"},
+    ]}}})
+    req = parse_request(doc)
+    rule = req.delivery_package_rule.cross_artifact.dependencies[0]
+    assert rule.artifact_id == "a"
+    assert rule.requires_artifact_id == "b"
+
+
+def test_parse_request_rejects_duration_consistency_with_one_artifact_id():
+    doc = _package_doc(rules={"delivery_package": {"cross_artifact": {"duration_consistency": [
+        {"artifact_ids": ["a"], "max_delta_sec": 0.5},
+    ]}}})
+    with pytest.raises(QCError) as exc:
+        parse_request(doc)
+    assert exc.value.code == "INVALID_REQUEST"
+
+
+def test_parse_request_rejects_negative_max_delta_sec():
+    doc = _package_doc(rules={"delivery_package": {"cross_artifact": {"duration_consistency": [
+        {"artifact_ids": ["a", "b"], "max_delta_sec": -1},
+    ]}}})
+    with pytest.raises(QCError) as exc:
+        parse_request(doc)
+    assert exc.value.code == "INVALID_REQUEST"
+
+
+def test_parse_request_rejects_unknown_cross_artifact_field():
+    doc = _package_doc(rules={"delivery_package": {"cross_artifact": {"bogus": []}}})
+    with pytest.raises(QCError) as exc:
+        parse_request(doc)
+    assert exc.value.code == "INVALID_REQUEST"
+
+
+def test_parse_request_rejects_dependency_missing_field():
+    doc = _package_doc(rules={"delivery_package": {"cross_artifact": {"dependencies": [
+        {"artifact_id": "a"},
+    ]}}})
+    with pytest.raises(QCError) as exc:
+        parse_request(doc)
+    assert exc.value.code == "INVALID_REQUEST"

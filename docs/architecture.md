@@ -156,14 +156,26 @@ the same id (two subtitle artifacts both have `subtitle.cue_count`),
 `QCMeasurement`/`QCCheck`/`QCFinding` all carry an optional `artifact_id`
 field (`None` for every other kind) to disambiguate them.
 
-**Explicitly out of scope for this kind** (Phase 1): comparing artifacts
-against *each other* - duration consistency between the video and its
-subtitle, or a thumbnail's aspect ratio vs. the video's - is cross-artifact
-validation, a distinct, not-yet-built capability
-(`docs/qc-evolution-gap-analysis.md`, Phase 2). This kind only asks, per
-artifact: is it present when required, the right size/extension, and (if
-a nested `video`/`audio`/`subtitle` rule was given) does that one artifact
-pass those checks on its own.
+Per-artifact checks (Phase 1) ask, for one artifact at a time: is it
+present when required, the right size/extension, and (if a nested
+`video`/`audio`/`subtitle` rule was given) does that one artifact pass
+those checks on its own - never compared against anything else in the
+package.
+
+**Cross-artifact validation** (`rules.delivery_package.cross_artifact`,
+Phase 2, ADR-011) compares *different* artifacts against each other:
+duration consistency (`ArtifactDurationConsistencyRule`) and
+presence dependency (`ArtifactDependencyRule`). Both are typed
+relationship rules over measurements the per-artifact gathering already
+produced - never a string comparison, never LLM/semantic judgment
+("does the subtitle's wording match the video" is out of scope
+everywhere in qc-skill, not just here). See `docs/checks.md` for the
+full check/finding list.
+
+**Still explicitly out of scope**: timeline-aware validation (does a
+delivery's subtitle cue timing survive a trim/concat/speed edit) is
+Phase 3 (`docs/qc-evolution-gap-analysis.md`), a distinct, not-yet-built
+capability.
 
 ## Relationship to other skills
 

@@ -182,6 +182,30 @@ e.g., two subtitle artifacts in the same package don't collide.
 A nested `video` / `audio` / `subtitle` rule on a `DeliveryArtifactRule`
 runs the same checks as the standalone `kind`s above, against that one
 artifact's own measurements only - never compared against any other
-artifact in the package. Comparing artifacts to each other (duration
-consistency, etc.) is intentionally not implemented here; see
-`docs/qc-evolution-gap-analysis.md` (Phase 2, cross-artifact validation).
+artifact in the package.
+
+### Cross-artifact validation (`rules.delivery_package.cross_artifact`)
+
+Typed relationship rules comparing *different* artifacts against each
+other - never a string comparison or LLM judgment (ADR-011,
+`docs/decisions.md`). Both operate purely on measurements each artifact's
+own gathering already produced.
+
+| check_id | rule field(s) | finding |
+|---|---|---|
+| `delivery_package.duration_consistent` | `cross_artifact.duration_consistency[].{artifact_ids, max_delta_sec}` | `DELIVERY_PACKAGE_DURATION_MISMATCH` |
+| `delivery_package.dependency_satisfied` | `cross_artifact.dependencies[].{artifact_id, requires_artifact_id}` | `DELIVERY_PACKAGE_DEPENDENCY_MISSING` |
+
+`duration_consistency` compares `container.duration_sec`
+(video/audio artifacts) or `subtitle.duration_sec` (subtitle artifacts)
+across the named `artifact_ids`; `UNKNOWN` (not a guessed `PASS`/`FAIL`)
+when any named artifact's duration could not be measured.
+`dependencies` only fires when `artifact_id` is actually present - an
+absent dependent artifact has nothing to enforce, since
+`delivery_package.artifact_present` (above) already covers that case on
+its own.
+
+Semantic comparisons (does the subtitle's wording match the video, does
+the thumbnail "look like" the video) are explicitly out of scope
+everywhere in qc-skill, not just here - see `not_provided` in
+`qc contract --json`.
