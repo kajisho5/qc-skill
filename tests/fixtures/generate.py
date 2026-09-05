@@ -8,8 +8,11 @@ invocation so the expected measurement values are known exactly.
 
 from __future__ import annotations
 
+import math
 import shutil
+import struct
 import subprocess
+import wave
 from pathlib import Path
 from typing import Dict
 
@@ -22,6 +25,46 @@ def _run(*args: str) -> None:
     )
     if result.returncode != 0:
         raise RuntimeError(f"fixture generation failed: {' '.join(args)}\n{result.stderr}")
+
+
+def _sine_samples(*, sample_rate: int, duration_sec: int, frequency: int, amplitude: float) -> bytes:
+    """16-bit PCM samples for a sine wave at an explicit amplitude
+    (fraction of full scale), computed directly rather than through any
+    ffmpeg source filter.
+    """
+
+    peak = amplitude * 32767
+    frames = bytearray()
+    for i in range(sample_rate * duration_sec):
+        value = int(round(peak * math.sin(2 * math.pi * frequency * (i / sample_rate))))
+        frames += struct.pack("<h", value)
+    return bytes(frames)
+
+
+def _write_clipped_square_wave(path: Path, *, sample_rate: int, duration_sec: int, frequency: int) -> None:
+    """Write mono 16-bit PCM samples pinned to full scale (+/-32767) - a
+    square wave, not a sine, so every single sample (not just the crest of
+    a sine) sits at the digital ceiling. This is already clipped audio by
+    construction; no encoder or filter is involved in producing it.
+    """
+
+    total_samples = sample_rate * duration_sec
+    samples_per_half_cycle = max(1, sample_rate // (frequency * 2))
+    frames = bytearray()
+    high = True
+    counter = 0
+    for _ in range(total_samples):
+        frames += struct.pack("<h", 32767 if high else -32767)
+        counter += 1
+        if counter >= samples_per_half_cycle:
+            counter = 0
+            high = not high
+
+    with wave.open(str(path), "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(sample_rate)
+        wav_file.writeframes(bytes(frames))
 
 
 def build_all(out_dir: Path) -> Dict[str, Path]:
@@ -79,38 +122,34 @@ def build_all(out_dir: Path) -> Dict[str, Path]:
     paths["corrupted"] = corrupted
 
     # silence_gap.wav: 2s tone, 2s silence, 2s tone -> one internal silence.
-    # The tone is generated with aevalsrc at an explicit amplitude (0.3,
-    # about -10.5 dBFS) rather than relying on the `sine` source's default
-    # gain, which is an undocumented implementation detail that has been
-    # observed to differ across ffmpeg builds/platforms - an explicit
-    # amplitude keeps this fixture's level (and therefore its relationship
-    # to the -30dB silencedetect threshold below) deterministic everywhere.
-    tone_a = out_dir / "_tone_a.wav"
-    silence_b = out_dir / "_silence_b.wav"
-    tone_c = out_dir / "_tone_c.wav"
+    # Written directly as 16-bit PCM with Python's stdlib `wave` and `math`
+    # modules (no ffmpeg lavfi source involved), at an explicit amplitude
+    # (30% of full scale, about -10.5 dBFS) safely above the -30dB
+    # silencedetect threshold used below - avoiding any dependency on an
+    # ffmpeg source filter's own default gain (see loud_clipping.wav above
+    # for why that matters: it was observed to differ across ffmpeg
+    # builds/platforms).
     silence_gap = out_dir / "silence_gap.wav"
-    _run("-f", "lavfi", "-i", "aevalsrc=0.3*sin(880*2*PI*t):s=44100:d=2", "-c:a", "pcm_s16le", str(tone_a))
-    _run("-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono:duration=2", "-c:a", "pcm_s16le", str(silence_b))
-    _run("-f", "lavfi", "-i", "aevalsrc=0.3*sin(880*2*PI*t):s=44100:d=2", "-c:a", "pcm_s16le", str(tone_c))
-    _run(
-        "-i", str(tone_a), "-i", str(silence_b), "-i", str(tone_c),
-        "-filter_complex", "[0:a][1:a][2:a]concat=n=3:v=0:a=1[out]", "-map", "[out]",
-        "-c:a", "pcm_s16le", str(silence_gap),
-    )
+    sample_rate = 44100
+    tone_samples = _sine_samples(sample_rate=sample_rate, duration_sec=2, frequency=880, amplitude=0.3)
+    silence_samples = struct.pack("<h", 0) * (sample_rate * 2)
+    with wave.open(str(silence_gap), "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(sample_rate)
+        wav_file.writeframes(tone_samples + silence_samples + tone_samples)
     paths["silence_gap"] = silence_gap
 
-    # loud_clipping.wav: an explicit-amplitude sine (2.5, well past the
-    # [-1.0, 1.0] float range) fed straight into a 16-bit PCM encoder,
-    # which hard-clamps every sample to full scale -> guaranteed digital
-    # clipping. Built with aevalsrc rather than `sine=...,volume=NdB` so
-    # the result does not depend on the `sine` source's own default gain,
-    # which is an undocumented implementation detail observed to differ
-    # across ffmpeg builds/platforms (see silence_gap.wav above).
+    # loud_clipping.wav: written directly as 16-bit PCM at full scale
+    # (+/-32767) with Python's stdlib `wave` module - no ffmpeg generation
+    # step at all, so there is no dependency on any lavfi source's default
+    # gain or on how a given ffmpeg build's filter chain handles
+    # out-of-range samples (both were observed, empirically, to differ
+    # across ffmpeg builds/platforms - see silence_gap.wav above). The
+    # file already contains guaranteed, unambiguous digital clipping;
+    # ffmpeg is only used to *measure* it via astats/ebur128.
     loud_clipping = out_dir / "loud_clipping.wav"
-    _run(
-        "-f", "lavfi", "-i", "aevalsrc=2.5*sin(1000*2*PI*t):s=44100:d=2",
-        "-c:a", "pcm_s16le", str(loud_clipping),
-    )
+    _write_clipped_square_wave(loud_clipping, sample_rate=44100, duration_sec=2, frequency=200)
     paths["loud_clipping"] = loud_clipping
 
     # subtitle_valid.srt: cues aligned with clean.mp4's 4s duration.
@@ -137,7 +176,7 @@ def build_all(out_dir: Path) -> Dict[str, Path]:
     )
     paths["subtitle_malformed"] = subtitle_malformed
 
-    for name in ("_black_a.mp4", "_black_b.mp4", "_tone_a.wav", "_silence_b.wav", "_tone_c.wav"):
+    for name in ("_black_a.mp4", "_black_b.mp4"):
         (out_dir / name).unlink(missing_ok=True)
 
     return paths
