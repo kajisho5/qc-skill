@@ -1,6 +1,6 @@
 ---
 name: qc-skill
-description: Deterministic media quality control / validation. Measures and checks video, audio, subtitle, and delivery artifacts against caller-supplied rules and returns structured PASS/WARN/FAIL/UNKNOWN results with evidence. Use when you need to know facts about a media file (resolution, fps, codec, loudness, silence, black/freeze frames, subtitle timing/coverage) or whether it meets an explicit spec (expected resolution/fps/codec, loudness target+tolerance, subtitle sync tolerance). Do NOT use this skill to decide whether media may ship, to edit/re-render/repair media, to generate or rewrite subtitles, or to transcribe/understand content semantically - those belong to video-production-agent (decisions), audio-production-skill / video-editing-skill (execution), subtitle-skill (generation), and transcription-skill (ASR).
+description: Deterministic media quality control / validation. Measures and checks video, audio, subtitle, and delivery artifacts - a single file, or (kind=delivery_package) N named artifacts (video + subtitle + thumbnail + metadata, ...) validated together as one delivery - against caller-supplied rules, and returns structured PASS/WARN/FAIL/UNKNOWN results with evidence. Use when you need to know facts about a media file (resolution, fps, codec, loudness, silence, black/freeze frames, subtitle timing/coverage) or whether it meets an explicit spec (expected resolution/fps/codec, loudness target+tolerance, subtitle sync tolerance, required companion artifacts). Do NOT use this skill to decide whether media may ship, to edit/re-render/repair media, to generate or rewrite subtitles, or to transcribe/understand content semantically - those belong to video-production-agent (decisions), audio-production-skill / video-editing-skill (execution), subtitle-skill (generation), and transcription-skill (ASR).
 ---
 
 # qc-skill
@@ -18,12 +18,13 @@ qc run <request.json | -> --json [--workspace DIR] [--allowed-input-root DIR]...
 | Field | Type | Meaning |
 |---|---|---|
 | `operation` | `inspect` \| `check` \| `validate` | measure only, or measure+evaluate rules |
-| `kind` | `video` \| `audio` \| `subtitle` \| `delivery` | what `input` is |
-| `input` | string | path to the primary artifact |
+| `kind` | `video` \| `audio` \| `subtitle` \| `delivery` \| `delivery_package` | what `input` (or `artifacts`) is |
+| `input` | string | path to the primary artifact (not accepted for `kind: delivery_package`) |
 | `subtitle` | string, optional | companion subtitle path (`kind: delivery` only) |
 | `reference_video` | string, optional | companion video path, for duration comparison (`kind: subtitle` only) |
+| `artifacts` | array, optional | `[{artifact_id, artifact_type, path}, ...]` - N named artifacts validated together as one delivery (`kind: delivery_package` only, required and non-empty for it) |
 | `parameters` | object, optional | detection sensitivity overrides (e.g. `silence_threshold_db`) |
-| `rules` | object, optional | typed expectations: `{video, audio, subtitle, delivery}` (see `src/qc_skill/rules.py`) |
+| `rules` | object, optional | typed expectations: `{video, audio, subtitle, delivery, delivery_package}` (see `src/qc_skill/rules.py`) |
 | `cache_policy` | `use` \| `bypass` \| `only` | default `use` |
 | `timeout` | number, optional | seconds |
 

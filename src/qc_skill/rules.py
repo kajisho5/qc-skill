@@ -21,7 +21,7 @@ Two kinds of checks are produced:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from typing import Any, Dict, List, Optional, Tuple
 
 from .models import FindingSeverity, QCCheck, QCFinding, QCMeasurement, QCStatus
@@ -732,5 +732,132 @@ def evaluate_delivery_basics(measurements: MeasurementMap, rule: DeliveryRule) -
             findings.append(f)
             check.finding_codes.append(f.code)
         checks.append(check)
+
+    return checks, findings
+
+
+# ---------------------------------------------------------------------------
+# Delivery package (N named artifacts validated together as one delivery -
+# see ADR-010: a new kind, deliberately not an extension of DeliveryRule)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class DeliveryArtifactRule:
+    """The QC policy for one named artifact inside a delivery package.
+
+    ``artifact_id`` must match an entry in the request's own ``artifacts``
+    list - that list (not this rule) is what actually names the file
+    paths, exactly like ``request.subtitle``/``request.reference_video``
+    are separate from ``DeliveryRule`` today. ``artifact_type``, when
+    given, is cross-checked against the request's declared type for the
+    same id (a caller-side sanity check, not a security boundary).
+    """
+
+    artifact_id: str
+    artifact_type: Optional[str] = None
+    required: bool = True
+    expected_extension: Optional[str] = None
+    min_size_bytes: Optional[int] = None
+    video: Optional[VideoRule] = None
+    audio: Optional[AudioRule] = None
+    subtitle: Optional[SubtitleRule] = None
+
+
+@dataclass
+class DeliveryPackageRule:
+    artifacts: List[DeliveryArtifactRule] = field(default_factory=list)
+
+
+def evaluate_delivery_package(
+    rule: DeliveryPackageRule, per_artifact_measurements: Dict[str, MeasurementMap]
+) -> Tuple[List[QCCheck], List[QCFinding]]:
+    """Structural, per-artifact checks only (STEP: Phase 1 scope).
+
+    Deliberately does not compare artifacts against each other - that is
+    cross-artifact validation (Phase 2, ``feature/cross-artifact-qc``),
+    a distinct, not-yet-built capability. This only asks, for each
+    artifact this rule names: is it present (when required), the right
+    size/extension, and - if a nested video/audio/subtitle rule was
+    given - does *that one artifact* pass those checks on its own.
+    """
+
+    checks: List[QCCheck] = []
+    findings: List[QCFinding] = []
+
+    for artifact_rule in rule.artifacts:
+        aid = artifact_rule.artifact_id
+        amap = per_artifact_measurements.get(aid, {})
+        present = bool(_val(amap, "delivery_package.artifact_present"))
+
+        status = QCStatus.FAIL if (artifact_rule.required and not present) else QCStatus.PASS
+        check = QCCheck(
+            "delivery_package.artifact_present", "delivery_package", status,
+            ["delivery_package.artifact_present"], artifact_id=aid,
+        )
+        if status == QCStatus.FAIL:
+            f = QCFinding(
+                "DELIVERY_PACKAGE_ARTIFACT_MISSING", FindingSeverity.FAIL,
+                f"required artifact {aid!r} is not present in the delivery package",
+                measurement_ids=["delivery_package.artifact_present"], artifact_id=aid,
+            )
+            findings.append(f)
+            check.finding_codes.append(f.code)
+        checks.append(check)
+
+        if not present:
+            continue  # nothing else can be evaluated for an absent artifact
+
+        if artifact_rule.min_size_bytes is not None:
+            size = _val(amap, "delivery_package.artifact_size_bytes")
+            status = QCStatus.PASS if (size is not None and size >= artifact_rule.min_size_bytes) else QCStatus.FAIL
+            check = QCCheck(
+                "delivery_package.artifact_size_within_limit", "delivery_package", status,
+                ["delivery_package.artifact_size_bytes"], artifact_id=aid,
+            )
+            if status == QCStatus.FAIL:
+                f = QCFinding(
+                    "DELIVERY_PACKAGE_ARTIFACT_TOO_SMALL", FindingSeverity.FAIL,
+                    f"artifact {aid!r} size {size} bytes is below the minimum {artifact_rule.min_size_bytes} bytes",
+                    evidence={"actual": size, "min_required": artifact_rule.min_size_bytes},
+                    measurement_ids=["delivery_package.artifact_size_bytes"], artifact_id=aid,
+                )
+                findings.append(f)
+                check.finding_codes.append(f.code)
+            checks.append(check)
+
+        if artifact_rule.expected_extension is not None:
+            actual_ext = _val(amap, "delivery_package.artifact_extension")
+            status = QCStatus.PASS if actual_ext == artifact_rule.expected_extension.lower() else QCStatus.FAIL
+            check = QCCheck(
+                "delivery_package.artifact_extension_matches_expected", "delivery_package", status,
+                ["delivery_package.artifact_extension"], artifact_id=aid,
+            )
+            if status == QCStatus.FAIL:
+                f = QCFinding(
+                    "DELIVERY_PACKAGE_ARTIFACT_EXTENSION_MISMATCH", FindingSeverity.FAIL,
+                    f"artifact {aid!r} extension {actual_ext!r} does not match expected {artifact_rule.expected_extension!r}",
+                    evidence={"actual": actual_ext, "expected": artifact_rule.expected_extension},
+                    measurement_ids=["delivery_package.artifact_extension"], artifact_id=aid,
+                )
+                findings.append(f)
+                check.finding_codes.append(f.code)
+            checks.append(check)
+
+        if artifact_rule.video is not None:
+            duration = _val(amap, "container.duration_sec")
+            c, f = evaluate_video(amap, artifact_rule.video, duration)
+            checks += [replace(x, artifact_id=aid) for x in c]
+            findings += [replace(x, artifact_id=aid) for x in f]
+
+        if artifact_rule.audio is not None:
+            c, f = evaluate_audio(amap, artifact_rule.audio)
+            checks += [replace(x, artifact_id=aid) for x in c]
+            findings += [replace(x, artifact_id=aid) for x in f]
+
+        if artifact_rule.subtitle is not None:
+            c, f = evaluate_subtitle(amap, artifact_rule.subtitle)
+            checks += [replace(x, artifact_id=aid) for x in c]
+            findings += [replace(x, artifact_id=aid) for x in f]
 
     return checks, findings

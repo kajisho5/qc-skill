@@ -79,6 +79,12 @@ class QCMeasurement:
     source: str = "OBSERVED"  # e.g. "ffprobe", "ffmpeg:ebur128", "ffmpeg:silencedetect"
     estimated: bool = False  # true when derived rather than directly reported
     notes: Optional[str] = None
+    # Which named artifact this came from, for kind="delivery_package" only
+    # (multiple artifacts in one report can otherwise share the same
+    # measurement id, e.g. two subtitle artifacts both producing
+    # "subtitle.cue_count" - this disambiguates them). Always None for
+    # every other kind.
+    artifact_id: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         d: Dict[str, Any] = {
@@ -95,6 +101,8 @@ class QCMeasurement:
             d["stream"] = self.stream
         if self.notes is not None:
             d["notes"] = self.notes
+        if self.artifact_id is not None:
+            d["artifact_id"] = self.artifact_id
         return d
 
 
@@ -110,6 +118,7 @@ class QCFinding:
     stream: Optional[int] = None
     measurement_ids: List[str] = field(default_factory=list)
     rule_id: Optional[str] = None
+    artifact_id: Optional[str] = None  # which named artifact, for kind="delivery_package" only
 
     def to_dict(self) -> Dict[str, Any]:
         d: Dict[str, Any] = {
@@ -126,6 +135,8 @@ class QCFinding:
             d["measurement_ids"] = self.measurement_ids
         if self.rule_id is not None:
             d["rule_id"] = self.rule_id
+        if self.artifact_id is not None:
+            d["artifact_id"] = self.artifact_id
         return d
 
 
@@ -140,6 +151,7 @@ class QCCheck:
     finding_codes: List[str] = field(default_factory=list)
     evidence: Dict[str, Any] = field(default_factory=dict)
     reason: Optional[str] = None  # required when status == UNKNOWN
+    artifact_id: Optional[str] = None  # which named artifact, for kind="delivery_package" only
 
     def to_dict(self) -> Dict[str, Any]:
         d: Dict[str, Any] = {
@@ -152,6 +164,8 @@ class QCCheck:
         }
         if self.reason is not None:
             d["reason"] = self.reason
+        if self.artifact_id is not None:
+            d["artifact_id"] = self.artifact_id
         return d
 
 
@@ -160,7 +174,7 @@ class QCReport:
     id: str
     version: str
     operation: str  # inspect | check | validate
-    kind: str  # video | audio | subtitle | delivery
+    kind: str  # video | audio | subtitle | delivery | delivery_package
     input: Dict[str, Any]
     checks: List[QCCheck] = field(default_factory=list)
     measurements: List[QCMeasurement] = field(default_factory=list)

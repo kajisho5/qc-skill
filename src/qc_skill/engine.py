@@ -9,7 +9,7 @@ resulting report is independently auditable.
 from __future__ import annotations
 
 import datetime as _dt
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -24,7 +24,16 @@ from .measurements.subtitle import measure_subtitle
 from .measurements.video import analyze_video_defects, measure_container, measure_video_streams
 from .models import QCCheck, QCFinding, QCMeasurement, QCReport
 from .probe import audio_streams, probe_media, video_streams
-from .rules import AudioRule, SubtitleRule, evaluate_audio, evaluate_delivery_basics, evaluate_subtitle, evaluate_video
+from .rules import (
+    AudioRule,
+    DeliveryPackageRule,
+    SubtitleRule,
+    evaluate_audio,
+    evaluate_delivery_basics,
+    evaluate_delivery_package,
+    evaluate_subtitle,
+    evaluate_video,
+)
 from .schemas import Request
 from .security import PathPolicy
 
@@ -67,15 +76,24 @@ def _dedupe_measurements(measurements: List[QCMeasurement]) -> List[QCMeasuremen
     """Delivery gathers video and audio metadata via two overlapping calls
     (each probes basic container/stream facts); keep the last, most
     detailed occurrence of each measurement id, preserving first-seen order.
+
+    Keyed on ``(id, artifact_id)`` rather than just ``id`` so that
+    kind="delivery_package" - where several artifacts can each produce a
+    measurement with the same id (two subtitle artifacts both have a
+    "subtitle.cue_count") - dedupes within one artifact's own
+    measurements without one artifact's data ever overwriting another's.
+    Every other kind always has ``artifact_id=None``, so this is exactly
+    the old id-only behavior for them.
     """
 
-    order: List[str] = []
-    by_id: Dict[str, QCMeasurement] = {}
+    order: List[tuple] = []
+    by_key: Dict[tuple, QCMeasurement] = {}
     for m in measurements:
-        if m.id not in by_id:
-            order.append(m.id)
-        by_id[m.id] = m
-    return [by_id[i] for i in order]
+        key = (m.id, m.artifact_id)
+        if key not in by_key:
+            order.append(key)
+        by_key[key] = m
+    return [by_key[k] for k in order]
 
 
 def _gather_video_measurements(
@@ -208,8 +226,6 @@ def _with_requirement(sub_rule, cls, field_name: str, delivery_level_value: Opti
         return sub_rule
     if sub_rule is None:
         return cls(**{field_name: delivery_level_value}) if delivery_level_value is not None else cls()
-    from dataclasses import replace
-
     return replace(sub_rule, **{field_name: delivery_level_value})
 
 
@@ -253,6 +269,7 @@ def _rules_payload(request: Request) -> Dict[str, Any]:
         "audio": as_dict(request.audio_rule),
         "subtitle": as_dict(request.subtitle_rule),
         "delivery": as_dict(request.delivery_rule),
+        "delivery_package": as_dict(request.delivery_package_rule),
     }
 
 
@@ -263,6 +280,9 @@ def run_report(request: Request, ctx: ExecutionContext) -> Dict[str, Any]:
 
     if not ctx.capabilities.ffprobe_available:
         raise error("DEPENDENCY_ERROR", "ffprobe is required but was not found on PATH")
+
+    if request.kind == "delivery_package":
+        return _run_delivery_package(request, ctx)
 
     input_path = ctx.path_policy.resolve_input(request.input)
     fingerprint = sha256_file(input_path)
@@ -399,6 +419,184 @@ def run_report(request: Request, ctx: ExecutionContext) -> Dict[str, Any]:
         operation=request.operation,
         kind=request.kind,
         input={"kind": request.kind, "fingerprint": fingerprint, "size_bytes": size_bytes},
+        checks=checks,
+        measurements=measurements,
+        findings=findings,
+        provenance=provenance,
+    )
+    report_dict = report.to_dict()
+
+    if ctx.cache is not None and request.cache_policy in ("use",):
+        ctx.cache.set(cache_key, cache_metadata, report_dict)
+
+    return {
+        "schema": "qc/response@1",
+        "status": "completed",
+        "skill": {"id": SKILL_ID, "version": SKILL_VERSION},
+        "report": report_dict,
+        "provenance": provenance,
+        "reused": reused,
+        "cache": {"status": cache_status, "policy": request.cache_policy, "key": cache_key},
+    }
+
+
+def _run_delivery_package(request: Request, ctx: ExecutionContext) -> Dict[str, Any]:
+    """``kind: "delivery_package"``: N named artifacts validated together
+    as one delivery (Phase 1, ADR-010). Kept as its own function, rather
+    than folded into ``run_report``'s single-primary-asset flow above, so
+    every existing kind's behavior (and its 162 pre-existing tests) stays
+    provably untouched by this addition.
+    """
+
+    rule = request.delivery_package_rule or DeliveryPackageRule()
+    rule_by_id = {a.artifact_id: a for a in rule.artifacts}
+    request_by_id = {a.artifact_id: a for a in request.artifacts}
+
+    for artifact_id, artifact_rule in rule_by_id.items():
+        if artifact_rule.artifact_type is not None:
+            declared = request_by_id.get(artifact_id)
+            if declared is not None and declared.artifact_type != artifact_rule.artifact_type:
+                raise error(
+                    "INVALID_REQUEST",
+                    f"artifact {artifact_id!r} is declared as {declared.artifact_type!r} in "
+                    f"request.artifacts but {artifact_rule.artifact_type!r} in rules.delivery_package",
+                )
+
+    effective_parameters = _effective_parameters(request)
+
+    resolved: Dict[str, Optional[Path]] = {}
+    fingerprints: Dict[str, Optional[str]] = {}
+    sizes: Dict[str, Optional[int]] = {}
+    for artifact in request.artifacts:
+        path = ctx.path_policy.resolve_input(artifact.path, must_exist=False)
+        resolved[artifact.artifact_id] = path
+        fingerprints[artifact.artifact_id] = sha256_file(path) if path is not None else None
+        sizes[artifact.artifact_id] = path.stat().st_size if path is not None else None
+
+    # One string per declared artifact - id, type, and content-or-"MISSING"
+    # - rather than a bag of fingerprints, so identity depends on *which*
+    # artifact changed or went missing, not just how many fingerprints
+    # happen to remain (STEP: determinism must not rely on coincidence).
+    asset_fingerprints = [
+        f"{a.artifact_id}:{a.artifact_type}:{fingerprints[a.artifact_id] or 'MISSING'}" for a in request.artifacts
+    ]
+
+    rules_payload = _rules_payload(request)
+    identity = _identity(
+        asset_fingerprints=asset_fingerprints,
+        kind=request.kind,
+        operation=request.operation,
+        effective_parameters=effective_parameters,
+        rules_payload=rules_payload,
+        caps=ctx.capabilities,
+    )
+    cache_key = identity
+    cache_metadata = {
+        "skill_version": SKILL_VERSION,
+        "asset_fingerprints": asset_fingerprints,
+        "kind": request.kind,
+        "operation": request.operation,
+        "effective_parameters": effective_parameters,
+        "ffmpeg_version": ctx.capabilities.ffmpeg_version,
+        "ffprobe_version": ctx.capabilities.ffprobe_version,
+    }
+
+    reused = False
+    cache_status = "disabled" if ctx.cache is None else "miss"
+
+    if ctx.cache is not None and request.cache_policy in ("use", "only"):
+        cached = ctx.cache.get(cache_key, cache_metadata)
+        if cached is not None:
+            return {
+                "schema": "qc/response@1",
+                "status": "completed",
+                "skill": {"id": SKILL_ID, "version": SKILL_VERSION},
+                "report": cached,
+                "provenance": cached.get("provenance", {}),
+                "reused": True,
+                "cache": {"status": "hit", "policy": request.cache_policy, "key": cache_key},
+            }
+        cache_status = "miss"
+
+    if request.cache_policy == "only":
+        raise error("VALIDATION_ERROR", "cache_policy is 'only' but no cached report was found", key=cache_key)
+
+    measurements: List[QCMeasurement] = []
+    per_artifact_measurements: Dict[str, Dict[str, QCMeasurement]] = {}
+
+    for artifact in request.artifacts:
+        aid = artifact.artifact_id
+        path = resolved[aid]
+        present = path is not None
+        own: List[QCMeasurement] = [
+            QCMeasurement("delivery_package.artifact_present", "delivery_package", "artifact_present", present, source="OBSERVED"),
+        ]
+        if present:
+            own.append(
+                QCMeasurement(
+                    "delivery_package.artifact_size_bytes", "delivery_package", "artifact_size_bytes", sizes[aid], source="OBSERVED",
+                )
+            )
+            own.append(
+                QCMeasurement(
+                    "delivery_package.artifact_extension", "delivery_package", "artifact_extension",
+                    path.suffix.lower().lstrip("."), source="OBSERVED",
+                )
+            )
+            own.append(
+                QCMeasurement(
+                    "delivery_package.artifact_fingerprint", "delivery_package", "artifact_fingerprint", fingerprints[aid], source="OBSERVED",
+                )
+            )
+            if artifact.artifact_type == "video":
+                own += _gather_video_measurements(ctx, path, effective_parameters, sizes[aid])
+            elif artifact.artifact_type == "audio":
+                own += _gather_audio_measurements(ctx, path, effective_parameters, sizes[aid])
+            elif artifact.artifact_type == "subtitle":
+                # No cross-artifact reference video here by design (Phase 1
+                # scope) - comparing this subtitle's duration against
+                # another artifact in the same package is cross-artifact
+                # validation, Phase 2's job, not this one's.
+                own += _gather_subtitle_measurements(path, None, effective_parameters)
+        own = _dedupe_measurements(own)
+        per_artifact_measurements[aid] = _measurement_map(own)
+        measurements += [replace(m, artifact_id=aid) for m in own]
+
+    checks: List[QCCheck] = []
+    findings: List[QCFinding] = []
+    if request.operation in ("check", "validate"):
+        checks, findings = evaluate_delivery_package(rule, per_artifact_measurements)
+
+    observed_at = now_iso(ctx.clock)
+    provenance = {
+        "skill": SKILL_ID,
+        "skill_version": SKILL_VERSION,
+        "operation": request.operation,
+        "engine": {
+            "ffmpeg_version": ctx.capabilities.ffmpeg_version or None,
+            "ffprobe_version": ctx.capabilities.ffprobe_version or None,
+        },
+        "artifacts": [
+            {
+                "artifact_id": a.artifact_id,
+                "artifact_type": a.artifact_type,
+                "present": resolved[a.artifact_id] is not None,
+                "fingerprint": fingerprints[a.artifact_id],
+                "size_bytes": sizes[a.artifact_id],
+            }
+            for a in request.artifacts
+        ],
+        "identity": identity,
+        "observed_at": observed_at,
+        "measurement_source": "OBSERVED",
+    }
+
+    report = QCReport(
+        id=f"qcreport_{identity[:16]}",
+        version="1",
+        operation=request.operation,
+        kind=request.kind,
+        input={"kind": request.kind, "artifacts": [a.artifact_id for a in request.artifacts]},
         checks=checks,
         measurements=measurements,
         findings=findings,
