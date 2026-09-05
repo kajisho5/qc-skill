@@ -35,7 +35,13 @@ def _gcd_ratio(width: int, height: int) -> str:
     return f"{width // g}:{height // g}"
 
 
-def measure_container(probe_data: Dict[str, Any]) -> List[QCMeasurement]:
+def measure_container(probe_data: Dict[str, Any], actual_size_bytes: Optional[int] = None) -> List[QCMeasurement]:
+    """``actual_size_bytes``, when given, is the caller's own ``stat()`` of
+    the resolved input file - authoritative, always available, and
+    preferred over ffprobe's self-reported ``format.size`` (which some
+    containers/formats omit).
+    """
+
     fmt = probe_data.get("format", {})
     measurements: List[QCMeasurement] = []
 
@@ -59,17 +65,26 @@ def measure_container(probe_data: Dict[str, Any]) -> List[QCMeasurement]:
             source="ffprobe",
         )
     )
-    size = fmt.get("size")
-    measurements.append(
-        QCMeasurement(
-            id="container.size_bytes",
-            category="container",
-            name="size_bytes",
-            value=int(size) if size is not None else None,
-            unit="bytes",
-            source="ffprobe",
+    if actual_size_bytes is not None:
+        measurements.append(
+            QCMeasurement(
+                id="container.size_bytes", category="container", name="size_bytes",
+                value=actual_size_bytes, unit="bytes", source="OBSERVED",
+                notes="from the resolved input file's own stat(), not the container's self-reported size",
+            )
         )
-    )
+    else:
+        size = fmt.get("size")
+        measurements.append(
+            QCMeasurement(
+                id="container.size_bytes",
+                category="container",
+                name="size_bytes",
+                value=int(size) if size is not None else None,
+                unit="bytes",
+                source="ffprobe",
+            )
+        )
     bit_rate = fmt.get("bit_rate")
     measurements.append(
         QCMeasurement(

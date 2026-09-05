@@ -38,6 +38,41 @@ def _unknown_check(check_id: str, category: str, reason: str, measurement_ids: L
     return QCCheck(check_id=check_id, category=category, status=QCStatus.UNKNOWN, measurement_ids=measurement_ids, reason=reason)
 
 
+def _equality_check(
+    checks: List[QCCheck],
+    findings: List[QCFinding],
+    *,
+    check_id: str,
+    category: str,
+    measurement_id: str,
+    actual: Any,
+    expected: Any,
+    code: str,
+    message: str,
+) -> None:
+    """One measurement compared to one expected value.
+
+    An unmeasured ``actual`` (``None``) is UNKNOWN, never a silent FAIL or
+    PASS - some ffprobe fields (e.g. ``channel_layout`` on plain PCM/WAV)
+    are legitimately absent even for a fully decodable, valid stream, and
+    that must not be reported as "does not match expected".
+    """
+
+    if actual is None:
+        checks.append(_unknown_check(check_id, category, f"{measurement_id} could not be measured", [measurement_id]))
+        return
+    status = QCStatus.PASS if actual == expected else QCStatus.FAIL
+    check = QCCheck(check_id, category, status, [measurement_id])
+    if status == QCStatus.FAIL:
+        f = QCFinding(
+            code, FindingSeverity.FAIL, message,
+            evidence={"actual": actual, "expected": expected}, measurement_ids=[measurement_id],
+        )
+        findings.append(f)
+        check.finding_codes.append(f.code)
+    checks.append(check)
+
+
 # ---------------------------------------------------------------------------
 # Video
 # ---------------------------------------------------------------------------
@@ -109,21 +144,31 @@ def evaluate_video(
     # --- policy: resolution ---
     if rule.expected_width is not None or rule.expected_height is not None:
         width, height = _val(measurements, "video.width"), _val(measurements, "video.height")
-        ok = (rule.expected_width is None or width == rule.expected_width) and (
-            rule.expected_height is None or height == rule.expected_height
-        )
-        status = QCStatus.PASS if ok else QCStatus.FAIL
-        check = QCCheck("video.resolution_matches_expected", "video", status, ["video.width", "video.height"])
-        if not ok:
-            f = QCFinding(
-                "VIDEO_RESOLUTION_MISMATCH", FindingSeverity.FAIL,
-                f"resolution {width}x{height} does not match expected {rule.expected_width}x{rule.expected_height}",
-                evidence={"actual": {"width": width, "height": height}, "expected": {"width": rule.expected_width, "height": rule.expected_height}},
-                measurement_ids=["video.width", "video.height"],
+        width_unmeasured = rule.expected_width is not None and width is None
+        height_unmeasured = rule.expected_height is not None and height is None
+        if width_unmeasured or height_unmeasured:
+            checks.append(
+                _unknown_check(
+                    "video.resolution_matches_expected", "video",
+                    "width/height could not be measured", ["video.width", "video.height"],
+                )
             )
-            findings.append(f)
-            check.finding_codes.append(f.code)
-        checks.append(check)
+        else:
+            ok = (rule.expected_width is None or width == rule.expected_width) and (
+                rule.expected_height is None or height == rule.expected_height
+            )
+            status = QCStatus.PASS if ok else QCStatus.FAIL
+            check = QCCheck("video.resolution_matches_expected", "video", status, ["video.width", "video.height"])
+            if not ok:
+                f = QCFinding(
+                    "VIDEO_RESOLUTION_MISMATCH", FindingSeverity.FAIL,
+                    f"resolution {width}x{height} does not match expected {rule.expected_width}x{rule.expected_height}",
+                    evidence={"actual": {"width": width, "height": height}, "expected": {"width": rule.expected_width, "height": rule.expected_height}},
+                    measurement_ids=["video.width", "video.height"],
+                )
+                findings.append(f)
+                check.finding_codes.append(f.code)
+            checks.append(check)
 
     # --- policy: frame rate ---
     if rule.expected_frame_rate is not None:
@@ -148,47 +193,31 @@ def evaluate_video(
     # --- policy: codec ---
     if rule.expected_codec is not None:
         codec = _val(measurements, "video.codec")
-        status = QCStatus.PASS if codec == rule.expected_codec else QCStatus.FAIL
-        check = QCCheck("video.codec_matches_expected", "video", status, ["video.codec"])
-        if status == QCStatus.FAIL:
-            f = QCFinding(
-                "VIDEO_CODEC_MISMATCH", FindingSeverity.FAIL,
-                f"codec {codec!r} does not match expected {rule.expected_codec!r}",
-                evidence={"actual": codec, "expected": rule.expected_codec}, measurement_ids=["video.codec"],
-            )
-            findings.append(f)
-            check.finding_codes.append(f.code)
-        checks.append(check)
+        _equality_check(
+            checks, findings, check_id="video.codec_matches_expected", category="video",
+            measurement_id="video.codec", actual=codec, expected=rule.expected_codec,
+            code="VIDEO_CODEC_MISMATCH", message=f"codec {codec!r} does not match expected {rule.expected_codec!r}",
+        )
 
     # --- policy: pixel format ---
     if rule.expected_pixel_format is not None:
         pix_fmt = _val(measurements, "video.pixel_format")
-        status = QCStatus.PASS if pix_fmt == rule.expected_pixel_format else QCStatus.FAIL
-        check = QCCheck("video.pixel_format_matches_expected", "video", status, ["video.pixel_format"])
-        if status == QCStatus.FAIL:
-            f = QCFinding(
-                "VIDEO_PIXEL_FORMAT_MISMATCH", FindingSeverity.FAIL,
-                f"pixel format {pix_fmt!r} does not match expected {rule.expected_pixel_format!r}",
-                evidence={"actual": pix_fmt, "expected": rule.expected_pixel_format}, measurement_ids=["video.pixel_format"],
-            )
-            findings.append(f)
-            check.finding_codes.append(f.code)
-        checks.append(check)
+        _equality_check(
+            checks, findings, check_id="video.pixel_format_matches_expected", category="video",
+            measurement_id="video.pixel_format", actual=pix_fmt, expected=rule.expected_pixel_format,
+            code="VIDEO_PIXEL_FORMAT_MISMATCH",
+            message=f"pixel format {pix_fmt!r} does not match expected {rule.expected_pixel_format!r}",
+        )
 
     # --- policy: aspect ratio ---
     if rule.expected_aspect_ratio is not None:
         aspect = _val(measurements, "video.aspect_ratio")
-        status = QCStatus.PASS if aspect == rule.expected_aspect_ratio else QCStatus.FAIL
-        check = QCCheck("video.aspect_ratio_matches_expected", "video", status, ["video.aspect_ratio"])
-        if status == QCStatus.FAIL:
-            f = QCFinding(
-                "VIDEO_ASPECT_MISMATCH", FindingSeverity.FAIL,
-                f"aspect ratio {aspect!r} does not match expected {rule.expected_aspect_ratio!r}",
-                evidence={"actual": aspect, "expected": rule.expected_aspect_ratio}, measurement_ids=["video.aspect_ratio"],
-            )
-            findings.append(f)
-            check.finding_codes.append(f.code)
-        checks.append(check)
+        _equality_check(
+            checks, findings, check_id="video.aspect_ratio_matches_expected", category="video",
+            measurement_id="video.aspect_ratio", actual=aspect, expected=rule.expected_aspect_ratio,
+            code="VIDEO_ASPECT_MISMATCH",
+            message=f"aspect ratio {aspect!r} does not match expected {rule.expected_aspect_ratio!r}",
+        )
 
     # --- policy: black frames ---
     if rule.max_single_black_sec is not None or rule.max_total_black_sec is not None:
@@ -337,45 +366,28 @@ def evaluate_audio(measurements: MeasurementMap, rule: Optional[AudioRule]) -> T
     # --- policy: sample rate / channels / layout ---
     if rule.expected_sample_rate is not None:
         sr = _val(measurements, "audio.sample_rate")
-        status = QCStatus.PASS if sr == rule.expected_sample_rate else QCStatus.FAIL
-        check = QCCheck("audio.sample_rate_matches_expected", "audio", status, ["audio.sample_rate"])
-        if status == QCStatus.FAIL:
-            f = QCFinding(
-                "AUDIO_SAMPLE_RATE_MISMATCH", FindingSeverity.FAIL,
-                f"sample rate {sr} does not match expected {rule.expected_sample_rate}",
-                evidence={"actual": sr, "expected": rule.expected_sample_rate}, measurement_ids=["audio.sample_rate"],
-            )
-            findings.append(f)
-            check.finding_codes.append(f.code)
-        checks.append(check)
+        _equality_check(
+            checks, findings, check_id="audio.sample_rate_matches_expected", category="audio",
+            measurement_id="audio.sample_rate", actual=sr, expected=rule.expected_sample_rate,
+            code="AUDIO_SAMPLE_RATE_MISMATCH", message=f"sample rate {sr} does not match expected {rule.expected_sample_rate}",
+        )
 
     if rule.expected_channels is not None:
         channels = _val(measurements, "audio.channels")
-        status = QCStatus.PASS if channels == rule.expected_channels else QCStatus.FAIL
-        check = QCCheck("audio.channels_match_expected", "audio", status, ["audio.channels"])
-        if status == QCStatus.FAIL:
-            f = QCFinding(
-                "AUDIO_CHANNELS_MISMATCH", FindingSeverity.FAIL,
-                f"channel count {channels} does not match expected {rule.expected_channels}",
-                evidence={"actual": channels, "expected": rule.expected_channels}, measurement_ids=["audio.channels"],
-            )
-            findings.append(f)
-            check.finding_codes.append(f.code)
-        checks.append(check)
+        _equality_check(
+            checks, findings, check_id="audio.channels_match_expected", category="audio",
+            measurement_id="audio.channels", actual=channels, expected=rule.expected_channels,
+            code="AUDIO_CHANNELS_MISMATCH", message=f"channel count {channels} does not match expected {rule.expected_channels}",
+        )
 
     if rule.expected_channel_layout is not None:
         layout = _val(measurements, "audio.channel_layout")
-        status = QCStatus.PASS if layout == rule.expected_channel_layout else QCStatus.FAIL
-        check = QCCheck("audio.channel_layout_matches_expected", "audio", status, ["audio.channel_layout"])
-        if status == QCStatus.FAIL:
-            f = QCFinding(
-                "AUDIO_CHANNEL_LAYOUT_MISMATCH", FindingSeverity.FAIL,
-                f"channel layout {layout!r} does not match expected {rule.expected_channel_layout!r}",
-                evidence={"actual": layout, "expected": rule.expected_channel_layout}, measurement_ids=["audio.channel_layout"],
-            )
-            findings.append(f)
-            check.finding_codes.append(f.code)
-        checks.append(check)
+        _equality_check(
+            checks, findings, check_id="audio.channel_layout_matches_expected", category="audio",
+            measurement_id="audio.channel_layout", actual=layout, expected=rule.expected_channel_layout,
+            code="AUDIO_CHANNEL_LAYOUT_MISMATCH",
+            message=f"channel layout {layout!r} does not match expected {rule.expected_channel_layout!r}",
+        )
 
     # --- policy: silence ---
     if rule.max_leading_silence_sec is not None:

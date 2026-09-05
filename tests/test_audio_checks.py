@@ -161,6 +161,25 @@ def test_sample_rate_and_channel_rules(media, workspace):
     assert checks_by_id(bad)["audio.sample_rate_matches_expected"]["status"] == "FAIL"
 
 
+def test_channel_layout_unmeasured_is_unknown_not_fail(media, workspace):
+    # ffprobe genuinely reports channel_layout=None for plain PCM/WAV mono
+    # audio (confirmed against loud_clipping.wav) - a rule expecting a
+    # specific layout must report UNKNOWN, not a false "mismatch" FAIL,
+    # when the underlying measurement was never available to compare.
+    inspected = run({"operation": "inspect", "kind": "audio", "input": str(media["loud_clipping"])}, workspace)
+    assert measurements_by_id(inspected)["audio.channel_layout"]["value"] is None
+
+    resp = run(
+        {"operation": "check", "kind": "audio", "input": str(media["loud_clipping"]), "rules": {"audio": {"expected_channel_layout": "mono"}}},
+        workspace,
+    )
+    check = checks_by_id(resp)["audio.channel_layout_matches_expected"]
+    assert check["status"] == "UNKNOWN"
+    assert check["reason"]
+    codes = {f["code"] for f in resp["report"]["findings"]}
+    assert "AUDIO_CHANNEL_LAYOUT_MISMATCH" not in codes
+
+
 def test_decode_integrity_baseline_passes_for_clean_audio(media, workspace):
     doc = {"operation": "check", "kind": "audio", "input": str(media["clean"])}
     resp = run(doc, workspace)

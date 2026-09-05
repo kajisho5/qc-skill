@@ -3,7 +3,17 @@
 This is the human-readable version of what `qc contract --json` reports.
 The contract is authoritative and generated from the same source
 (`src/qc_skill/contract.py`); nothing listed here is aspirational - if it
-isn't in the contract, it isn't implemented yet.
+isn't in the contract, it isn't implemented yet. `tests/test_contract_completeness.py`
+diffs the contract against the actual source of `rules.py` and
+`measurements/*.py` in both directions, so this document, the contract,
+and the implementation cannot silently drift apart.
+
+The contract also exposes two machine-readable sections not repeated in
+full here: `contract["rules"]` - the accepted field name/type/default for
+`VideoRule`/`AudioRule`/`SubtitleRule`/`DeliveryRule`, generated directly
+from the dataclasses in `rules.py` (so it is never a stale second copy)
+- and `contract["findings"]` - every finding code this skill can emit,
+with its category and default severity.
 
 ## Video (`kind: "video"`, and `kind: "delivery"` when a video stream is present)
 

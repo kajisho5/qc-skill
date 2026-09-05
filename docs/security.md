@@ -56,6 +56,16 @@
   Restricting inputs to specific roots is the caller's choice, made via
   `qc run --allowed-input-root DIR` (repeatable), never via the request
   body.
+- **Current usage note**: today's `run` operation only ever writes the
+  report to stdout - there is no "write a report to this caller-named
+  path" operation yet, so `resolve_output` is not on the current `run`
+  call path. It is exercised directly by `tests/test_security.py` and is
+  the boundary any future file-output flag (or the report cache, if its
+  layout ever stops being a fixed, non-request-derived hash filename)
+  must go through. The report cache itself (`--cache-dir`) is a plain,
+  unvalidated CLI flag today, at the same trust tier as `--workspace` -
+  its filenames are always a sha256 hex digest computed internally, never
+  derived from request content, so this is not a path-injection surface.
 
 `--workspace` and `--allowed-input-root` are always CLI flags supplied by
 the process invoking `qc run` - never fields inside the JSON request. This

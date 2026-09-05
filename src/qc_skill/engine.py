@@ -82,7 +82,7 @@ def _gather_video_measurements(
     ctx: ExecutionContext, input_path: Path, params: Dict[str, Any]
 ) -> List[QCMeasurement]:
     probe_data = probe_media(ctx.capabilities.ffprobe_path, input_path)
-    measurements = measure_container(probe_data)
+    measurements = measure_container(probe_data, actual_size_bytes=input_path.stat().st_size)
     measurements += measure_video_streams(probe_data)
     measurements += measure_audio_streams(probe_data)
 
@@ -117,7 +117,7 @@ def _gather_audio_measurements(
     ctx: ExecutionContext, input_path: Path, params: Dict[str, Any]
 ) -> List[QCMeasurement]:
     probe_data = probe_media(ctx.capabilities.ffprobe_path, input_path)
-    measurements = measure_container(probe_data)
+    measurements = measure_container(probe_data, actual_size_bytes=input_path.stat().st_size)
     measurements += measure_audio_streams(probe_data)
 
     a_streams = audio_streams(probe_data)
@@ -344,7 +344,7 @@ def run_report(request: Request, ctx: ExecutionContext) -> Dict[str, Any]:
     elif request.kind == "delivery":
         measurements = []
         fmt_probe = probe_media(ctx.capabilities.ffprobe_path, input_path)
-        measurements += measure_container(fmt_probe)
+        measurements += measure_container(fmt_probe, actual_size_bytes=size_bytes)
         measurements.append(QCMeasurement("delivery.extension", "delivery", "extension", input_path.suffix.lower().lstrip("."), source="OBSERVED"))
         v = video_streams(fmt_probe)
         a = audio_streams(fmt_probe)

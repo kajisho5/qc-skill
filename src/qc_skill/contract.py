@@ -7,6 +7,7 @@ in docs, never in the machine-readable contract or doctor output).
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import platform
@@ -16,6 +17,7 @@ from typing import Any, Dict
 from . import CONTRACT_VERSION, PACKAGE_NAME, SKILL_ID, VERSION
 from .capabilities import REQUIRED_FILTERS, detect_capabilities
 from .errors import ERROR_CODES
+from .rules import AudioRule, DeliveryRule, SubtitleRule, VideoRule
 
 SUPPORTED_OPERATIONS = ["inspect", "check", "validate"]
 SUPPORTED_KINDS = ["video", "audio", "subtitle", "delivery"]
@@ -69,6 +71,60 @@ SUPPORTED_FORMATS = {
     "subtitle_formats": ["srt", "vtt", "ass", "ssa"],
 }
 
+# (code, default_severity) for every QCFinding this skill can emit.
+# "default" because two codes (AUDIO_STREAM_MISSING/UNEXPECTED and
+# AUDIO_CHANNEL_MISSING/IMBALANCE) are chosen conditionally by which of a
+# pair applies, not by a request parameter - the severity itself is fixed.
+# Kept in sync with rules.py by tests/test_contract_completeness.py, which
+# extracts every code actually passed to QCFinding()/_equality_check() from
+# source and diffs it against this list in both directions.
+FINDING_CATALOG = [
+    ("VIDEO_STREAM_MISSING", "FAIL"),
+    ("VIDEO_DECODE_ERROR", "FAIL"),
+    ("VIDEO_RESOLUTION_MISMATCH", "FAIL"),
+    ("VIDEO_FPS_MISMATCH", "FAIL"),
+    ("VIDEO_CODEC_MISMATCH", "FAIL"),
+    ("VIDEO_PIXEL_FORMAT_MISMATCH", "FAIL"),
+    ("VIDEO_ASPECT_MISMATCH", "FAIL"),
+    ("VIDEO_BLACK_FRAMES_EXCEEDED", "FAIL"),
+    ("VIDEO_FREEZE_EXCEEDED", "FAIL"),
+    ("AUDIO_STREAM_MISSING", "FAIL"),
+    ("AUDIO_STREAM_UNEXPECTED", "FAIL"),
+    ("AUDIO_DECODE_ERROR", "FAIL"),
+    ("AUDIO_CLIPPING_DETECTED", "FAIL"),
+    ("AUDIO_SAMPLE_RATE_MISMATCH", "FAIL"),
+    ("AUDIO_CHANNELS_MISMATCH", "FAIL"),
+    ("AUDIO_CHANNEL_LAYOUT_MISMATCH", "FAIL"),
+    ("AUDIO_LEADING_SILENCE_EXCEEDED", "WARN"),
+    ("AUDIO_TRAILING_SILENCE_EXCEEDED", "WARN"),
+    ("AUDIO_INTERNAL_SILENCE_EXCEEDED", "WARN"),
+    ("AUDIO_LOUDNESS_OUT_OF_RANGE", "FAIL"),
+    ("AUDIO_TRUE_PEAK_EXCEEDED", "FAIL"),
+    ("AUDIO_LOUDNESS_RANGE_EXCEEDED", "WARN"),
+    ("AUDIO_CHANNEL_IMBALANCE", "FAIL"),
+    ("AUDIO_CHANNEL_MISSING", "FAIL"),
+    ("SUBTITLE_MISSING", "FAIL"),
+    ("SUBTITLE_INVALID_TIMESTAMP", "FAIL"),
+    ("SUBTITLE_EMPTY_CUE", "WARN"),
+    ("SUBTITLE_DUPLICATE_ID", "FAIL"),
+    ("SUBTITLE_CONTROL_CHARACTER", "FAIL"),
+    ("SUBTITLE_OVERLAPPING_CUES", "FAIL"),
+    ("SUBTITLE_LINE_TOO_LONG", "WARN"),
+    ("SUBTITLE_CUE_TOO_LONG", "WARN"),
+    ("SUBTITLE_GAP_EXCEEDED", "WARN"),
+    ("SUBTITLE_DURATION_MISMATCH", "FAIL"),
+    ("SUBTITLE_COVERAGE_LOW", "WARN"),
+    ("DELIVERY_FILE_TOO_SMALL", "FAIL"),
+    ("DELIVERY_EXTENSION_MISMATCH", "FAIL"),
+    ("DELIVERY_CONTAINER_MISMATCH", "FAIL"),
+]
+
+_CATEGORY_PREFIXES = {"VIDEO": "video", "AUDIO": "audio", "SUBTITLE": "subtitle", "DELIVERY": "delivery"}
+
+
+def _finding_category(code: str) -> str:
+    return _CATEGORY_PREFIXES[code.split("_", 1)[0]]
+
 NOT_PROVIDED = [
     "production decisions (publish/re-render/block)",
     "automatic editing or repair",
@@ -79,6 +135,49 @@ NOT_PROVIDED = [
     "subtitle generation, rewriting, or translation",
     "arbitrary ffmpeg filter graphs or arbitrary shell execution",
 ]
+
+
+_NESTED_RULE_NAMES = {VideoRule: "video", AudioRule: "audio", SubtitleRule: "subtitle"}
+
+
+def _type_name(t: Any) -> str:
+    return getattr(t, "__name__", str(t))
+
+
+def _rule_field_schema(f: dataclasses.Field) -> Dict[str, Any]:
+    default = f.default if f.default is not dataclasses.MISSING else None
+    if isinstance(default, (VideoRule, AudioRule, SubtitleRule)):
+        default = None
+    entry: Dict[str, Any] = {"type": _type_name(f.type), "default": default}
+    for nested_cls, name in _NESTED_RULE_NAMES.items():
+        if nested_cls.__name__ in str(f.type):
+            entry["nested_rule"] = name
+    return entry
+
+
+def _rule_schema(cls: type) -> Dict[str, Any]:
+    return {f.name: _rule_field_schema(f) for f in dataclasses.fields(cls)}
+
+
+def rules_contract_schema() -> Dict[str, Any]:
+    """Rule field schema, derived live from the actual dataclasses
+    (rules.py) - this can never drift from the real accepted fields
+    because it is not a second, hand-maintained copy of them.
+    """
+
+    return {
+        "video": _rule_schema(VideoRule),
+        "audio": _rule_schema(AudioRule),
+        "subtitle": _rule_schema(SubtitleRule),
+        "delivery": _rule_schema(DeliveryRule),
+    }
+
+
+def findings_contract_catalog() -> list:
+    return [
+        {"code": code, "category": _finding_category(code), "default_severity": severity}
+        for code, severity in FINDING_CATALOG
+    ]
 
 
 def tool_spec(check_id: str, category: str) -> Dict[str, Any]:
@@ -126,6 +225,8 @@ def skill_contract() -> Dict[str, Any]:
             "delivery": SUPPORTED_DELIVERY_MEASUREMENTS,
         },
         "checks": SUPPORTED_CHECKS,
+        "rules": rules_contract_schema(),
+        "findings": findings_contract_catalog(),
         "formats": SUPPORTED_FORMATS,
         "statuses": ["PASS", "WARN", "FAIL", "UNKNOWN"],
         "execution": {

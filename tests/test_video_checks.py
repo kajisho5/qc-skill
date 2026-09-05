@@ -134,3 +134,14 @@ def test_unknown_status_is_not_conflated_with_pass_when_no_video_stream(media, w
     checks = checks_by_id(resp)
     assert checks["video.stream_present"]["status"] == "FAIL"
     assert resp["report"]["overall_status"] == "FAIL"
+
+
+def test_container_size_bytes_matches_the_actual_file_size(media, workspace):
+    # container.size_bytes must come from the resolved file's own stat(),
+    # not solely trust ffprobe's self-reported (and sometimes absent or
+    # approximate) format.size field.
+    doc = {"operation": "inspect", "kind": "video", "input": str(media["clean"])}
+    resp = run(doc, workspace)
+    m = measurements_by_id(resp)["container.size_bytes"]
+    assert m["value"] == media["clean"].stat().st_size
+    assert m["source"] == "OBSERVED"
