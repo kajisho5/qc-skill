@@ -21,7 +21,7 @@ def test_contract_identifies_the_skill():
 def test_contract_lists_only_implemented_operations():
     doc = skill_contract()
     assert set(doc["operations"]) == {"inspect", "check", "validate"}
-    assert set(doc["kinds"]) == {"video", "audio", "subtitle", "delivery"}
+    assert set(doc["kinds"]) == {"video", "audio", "subtitle", "delivery", "delivery_package"}
 
 
 def test_contract_never_advertises_unimplemented_features():

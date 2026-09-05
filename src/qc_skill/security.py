@@ -117,7 +117,19 @@ class PathPolicy:
             [Path(r).resolve() for r in allowed_input_roots] if allowed_input_roots else None
         )
 
-    def resolve_input(self, raw_path: str) -> Path:
+    def resolve_input(self, raw_path: str, *, must_exist: bool = True) -> Optional[Path]:
+        """Resolve and validate one input path.
+
+        ``must_exist=False`` (used only for ``kind: "delivery_package"``
+        artifacts, where "this artifact is missing" is itself a
+        graceful, reportable fact rather than a request-level error)
+        returns ``None`` instead of raising when the path simply does not
+        exist. Every other validation - traversal, control characters,
+        not-a-regular-file, outside the allowed input roots - still
+        raises exactly as it does today, because those are never a
+        legitimate "the artifact is absent" outcome.
+        """
+
         _check_path_string(raw_path, code="PATH_NOT_ALLOWED")
         if _has_traversal(raw_path):
             raise error("PATH_NOT_ALLOWED", "path traversal ('..') is not allowed", path=raw_path)
@@ -126,6 +138,8 @@ class PathPolicy:
         try:
             resolved = candidate.resolve(strict=True)
         except FileNotFoundError:
+            if not must_exist:
+                return None
             raise error("MISSING_INPUT", "input file does not exist", path=raw_path)
         except OSError as exc:
             raise error("INVALID_INPUT", f"could not resolve input path: {exc}", path=raw_path)

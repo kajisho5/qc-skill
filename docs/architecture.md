@@ -124,6 +124,47 @@ as a miss, never returned as a successful reuse.
   entry (useful for a caller that wants to assert "this was already
   checked").
 
+## Delivery package (`kind: "delivery_package"`)
+
+A delivery is often more than one file - a video plus a subtitle plus a
+thumbnail plus a metadata sidecar - produced independently by several
+skills. `kind: "delivery_package"` validates N *named* artifacts as one
+unit, without qc-skill ever importing a `ProductionPlan`/agent-side type
+directly (ADR-010, `docs/decisions.md`):
+
+```
+request.artifacts:            [{artifact_id, artifact_type, path}, ...]   # what exists (typed, request-side)
+rules.delivery_package.artifacts: [DeliveryArtifactRule, ...]              # what's expected of each (typed, rule-side)
+```
+
+The two lists are paired by `artifact_id`, mirroring how `request.subtitle`
+is already separate from `DeliveryRule` today. `fingerprint` is never a
+caller-supplied field - qc-skill always computes it itself
+(`sha256_file`) from the resolved file, the same stance ADR-008 already
+takes for cache reuse.
+
+A required artifact that is genuinely absent is a normal, reportable
+`FAIL` (`DELIVERY_PACKAGE_ARTIFACT_MISSING`), not a request-level error:
+`PathPolicy.resolve_input(path, must_exist=False)` still enforces every
+other boundary (traversal, control characters, not-a-regular-file,
+outside the allowed input roots) exactly as it does for every other kind
+- only "the file does not exist" is downgraded from an exception to a
+measurement, and only for this kind.
+
+Because several artifacts in one report can produce a measurement with
+the same id (two subtitle artifacts both have `subtitle.cue_count`),
+`QCMeasurement`/`QCCheck`/`QCFinding` all carry an optional `artifact_id`
+field (`None` for every other kind) to disambiguate them.
+
+**Explicitly out of scope for this kind** (Phase 1): comparing artifacts
+against *each other* - duration consistency between the video and its
+subtitle, or a thumbnail's aspect ratio vs. the video's - is cross-artifact
+validation, a distinct, not-yet-built capability
+(`docs/qc-evolution-gap-analysis.md`, Phase 2). This kind only asks, per
+artifact: is it present when required, the right size/extension, and (if
+a nested `video`/`audio`/`subtitle` rule was given) does that one artifact
+pass those checks on its own.
+
 ## Relationship to other skills
 
 - **`ffmpeg-skill` / `media-analysis-skill`** - general-purpose

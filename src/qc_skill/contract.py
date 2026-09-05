@@ -17,10 +17,11 @@ from typing import Any, Dict
 from . import CONTRACT_VERSION, PACKAGE_NAME, SKILL_ID, VERSION
 from .capabilities import REQUIRED_FILTERS, detect_capabilities
 from .errors import ERROR_CODES
-from .rules import AudioRule, DeliveryRule, SubtitleRule, VideoRule
+from .rules import AudioRule, DeliveryArtifactRule, DeliveryPackageRule, DeliveryRule, SubtitleRule, VideoRule
+from .schemas import VALID_ARTIFACT_TYPES
 
 SUPPORTED_OPERATIONS = ["inspect", "check", "validate"]
-SUPPORTED_KINDS = ["video", "audio", "subtitle", "delivery"]
+SUPPORTED_KINDS = ["video", "audio", "subtitle", "delivery", "delivery_package"]
 
 SUPPORTED_VIDEO_MEASUREMENTS = [
     "container.format_name", "container.duration_sec", "container.size_bytes", "container.bit_rate",
@@ -50,6 +51,11 @@ SUPPORTED_SUBTITLE_MEASUREMENTS = [
 
 SUPPORTED_DELIVERY_MEASUREMENTS = ["delivery.extension"] + SUPPORTED_VIDEO_MEASUREMENTS + SUPPORTED_AUDIO_MEASUREMENTS + SUPPORTED_SUBTITLE_MEASUREMENTS
 
+SUPPORTED_DELIVERY_PACKAGE_MEASUREMENTS = [
+    "delivery_package.artifact_present", "delivery_package.artifact_size_bytes",
+    "delivery_package.artifact_extension", "delivery_package.artifact_fingerprint",
+] + SUPPORTED_VIDEO_MEASUREMENTS + SUPPORTED_AUDIO_MEASUREMENTS + SUPPORTED_SUBTITLE_MEASUREMENTS
+
 SUPPORTED_CHECKS = [
     "video.stream_present", "video.decodes_without_errors", "video.resolution_matches_expected",
     "video.frame_rate_matches_expected", "video.codec_matches_expected", "video.pixel_format_matches_expected",
@@ -64,6 +70,8 @@ SUPPORTED_CHECKS = [
     "subtitle.line_length_within_limit", "subtitle.cue_duration_within_limit", "subtitle.gaps_within_limit",
     "subtitle.duration_matches_video", "subtitle.coverage_within_limit",
     "delivery.file_size_within_limit", "delivery.extension_matches_expected", "delivery.container_matches_expected",
+    "delivery_package.artifact_present", "delivery_package.artifact_size_within_limit",
+    "delivery_package.artifact_extension_matches_expected",
 ]
 
 SUPPORTED_FORMATS = {
@@ -117,12 +125,17 @@ FINDING_CATALOG = [
     ("DELIVERY_FILE_TOO_SMALL", "FAIL"),
     ("DELIVERY_EXTENSION_MISMATCH", "FAIL"),
     ("DELIVERY_CONTAINER_MISMATCH", "FAIL"),
+    ("DELIVERY_PACKAGE_ARTIFACT_MISSING", "FAIL"),
+    ("DELIVERY_PACKAGE_ARTIFACT_TOO_SMALL", "FAIL"),
+    ("DELIVERY_PACKAGE_ARTIFACT_EXTENSION_MISMATCH", "FAIL"),
 ]
 
 _CATEGORY_PREFIXES = {"VIDEO": "video", "AUDIO": "audio", "SUBTITLE": "subtitle", "DELIVERY": "delivery"}
 
 
 def _finding_category(code: str) -> str:
+    if code.startswith("DELIVERY_PACKAGE_"):
+        return "delivery_package"
     return _CATEGORY_PREFIXES[code.split("_", 1)[0]]
 
 NOT_PROVIDED = [
@@ -137,7 +150,10 @@ NOT_PROVIDED = [
 ]
 
 
-_NESTED_RULE_NAMES = {VideoRule: "video", AudioRule: "audio", SubtitleRule: "subtitle"}
+_NESTED_RULE_NAMES = {
+    VideoRule: "video", AudioRule: "audio", SubtitleRule: "subtitle",
+    DeliveryArtifactRule: "delivery_package_artifact",
+}
 
 
 def _type_name(t: Any) -> str:
@@ -170,6 +186,8 @@ def rules_contract_schema() -> Dict[str, Any]:
         "audio": _rule_schema(AudioRule),
         "subtitle": _rule_schema(SubtitleRule),
         "delivery": _rule_schema(DeliveryRule),
+        "delivery_package": _rule_schema(DeliveryPackageRule),
+        "delivery_package_artifact": _rule_schema(DeliveryArtifactRule),
     }
 
 
@@ -206,9 +224,10 @@ def skill_contract() -> Dict[str, Any]:
             "optional": ["ffmpeg", "filter:blackdetect", "filter:freezedetect", "filter:ebur128", "filter:astats", "filter:silencedetect"],
         },
         "inputs": {
-            "input": "media or subtitle file path (one primary artifact per request)",
+            "input": "media or subtitle file path (one primary artifact per request; not accepted for kind=delivery_package)",
             "subtitle": "companion subtitle file path (kind=delivery only)",
             "reference_video": "companion video file path, for duration comparison (kind=subtitle only)",
+            "artifacts": "list of {artifact_id, artifact_type, path} - N named artifacts validated together (kind=delivery_package only, required and non-empty for it)",
         },
         "outputs": ["report"],
         "parameters": sorted(
@@ -223,11 +242,13 @@ def skill_contract() -> Dict[str, Any]:
             "audio": SUPPORTED_AUDIO_MEASUREMENTS,
             "subtitle": SUPPORTED_SUBTITLE_MEASUREMENTS,
             "delivery": SUPPORTED_DELIVERY_MEASUREMENTS,
+            "delivery_package": SUPPORTED_DELIVERY_PACKAGE_MEASUREMENTS,
         },
         "checks": SUPPORTED_CHECKS,
         "rules": rules_contract_schema(),
         "findings": findings_contract_catalog(),
         "formats": SUPPORTED_FORMATS,
+        "delivery_package": {"artifact_types": sorted(VALID_ARTIFACT_TYPES)},
         "statuses": ["PASS", "WARN", "FAIL", "UNKNOWN"],
         "execution": {
             "mode": "local_subprocess",

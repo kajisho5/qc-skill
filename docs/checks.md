@@ -147,3 +147,41 @@ nested `video`/`audio`/`subtitle` rule) with delivery-specific checks:
 A delivery-level `require_video` / `require_audio` / `require_subtitle`
 folds into the corresponding sub-rule's own requirement field unless the
 sub-rule already specifies one explicitly.
+
+## Delivery package (`kind: "delivery_package"`)
+
+Validates N named artifacts (`request.artifacts`: `{artifact_id,
+artifact_type, path}`) as one delivery, paired against
+`rules.delivery_package.artifacts` (`DeliveryArtifactRule`) by
+`artifact_id`. See `docs/architecture.md` and ADR-010
+(`docs/decisions.md`) for why this is a separate kind from `delivery`
+rather than an extension of it. `artifact_type` is one of `video`,
+`audio`, `subtitle`, `thumbnail`, `metadata`, `other`; only the first
+three get type-specific measurement/checks (they reuse the same
+video/audio/subtitle machinery as the other kinds) - `thumbnail`,
+`metadata`, and `other` only get the generic checks below.
+
+**Measurements** (`src/qc_skill/engine.py::_run_delivery_package`, per
+artifact): `delivery_package.artifact_present`,
+`delivery_package.artifact_size_bytes`, `delivery_package.artifact_extension`,
+`delivery_package.artifact_fingerprint` (sha256, always computed by
+qc-skill itself - never accepted from the caller), plus the full
+`video.*`/`audio.*`/`subtitle.*` measurement set for artifacts of those
+types. Every measurement carries the producing `artifact_id` so that,
+e.g., two subtitle artifacts in the same package don't collide.
+
+**Checks** (per artifact, only for artifact ids named in
+`rules.delivery_package.artifacts`):
+
+| check_id | rule field(s) | finding |
+|---|---|---|
+| `delivery_package.artifact_present` | `required` (default `true`) | `DELIVERY_PACKAGE_ARTIFACT_MISSING` |
+| `delivery_package.artifact_size_within_limit` | `min_size_bytes` | `DELIVERY_PACKAGE_ARTIFACT_TOO_SMALL` |
+| `delivery_package.artifact_extension_matches_expected` | `expected_extension` | `DELIVERY_PACKAGE_ARTIFACT_EXTENSION_MISMATCH` |
+
+A nested `video` / `audio` / `subtitle` rule on a `DeliveryArtifactRule`
+runs the same checks as the standalone `kind`s above, against that one
+artifact's own measurements only - never compared against any other
+artifact in the package. Comparing artifacts to each other (duration
+consistency, etc.) is intentionally not implemented here; see
+`docs/qc-evolution-gap-analysis.md` (Phase 2, cross-artifact validation).
