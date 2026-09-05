@@ -32,6 +32,12 @@ Never send `command`, `argv`, `args`, `shell`, `cmd`, `exec`, `executable`,
 `filter`, `filter_complex`, or `env` - the request schema rejects all of
 them outright, at any nesting depth.
 
+For `kind: "delivery_package"`, `rules.delivery_package.cross_artifact`
+adds typed relationship checks across the named artifacts:
+`duration_consistency` (durations must agree within a tolerance) and
+`dependencies` (if artifact A is present, artifact B must be too) - never
+a string comparison or semantic/LLM judgment. See `docs/checks.md`.
+
 ## Example
 
 ```json
