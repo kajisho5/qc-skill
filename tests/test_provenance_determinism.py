@@ -58,3 +58,16 @@ def test_observed_at_is_utc_iso8601_with_z_suffix(media, workspace):
     observed_at = resp["provenance"]["observed_at"]
     assert observed_at.endswith("Z")
     dt.datetime.fromisoformat(observed_at[:-1])  # must parse as a valid timestamp
+
+
+def test_provenance_size_matches_the_container_measurement_exactly(media, workspace):
+    # Both must come from the same single stat() call, not two independent
+    # ones, so they can never disagree even under a theoretical race.
+    doc = {"operation": "inspect", "kind": "video", "input": str(media["clean"])}
+    resp = run(doc, workspace)
+    from tests.helpers import measurements_by_id
+
+    provenance_size = resp["provenance"]["input"]["size_bytes"]
+    measurement_size = measurements_by_id(resp)["container.size_bytes"]["value"]
+    actual_size = media["clean"].stat().st_size
+    assert provenance_size == measurement_size == actual_size

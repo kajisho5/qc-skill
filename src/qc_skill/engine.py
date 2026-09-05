@@ -79,10 +79,10 @@ def _dedupe_measurements(measurements: List[QCMeasurement]) -> List[QCMeasuremen
 
 
 def _gather_video_measurements(
-    ctx: ExecutionContext, input_path: Path, params: Dict[str, Any]
+    ctx: ExecutionContext, input_path: Path, params: Dict[str, Any], size_bytes: int
 ) -> List[QCMeasurement]:
     probe_data = probe_media(ctx.capabilities.ffprobe_path, input_path)
-    measurements = measure_container(probe_data, actual_size_bytes=input_path.stat().st_size)
+    measurements = measure_container(probe_data, actual_size_bytes=size_bytes)
     measurements += measure_video_streams(probe_data)
     measurements += measure_audio_streams(probe_data)
 
@@ -114,10 +114,10 @@ def _gather_video_measurements(
 
 
 def _gather_audio_measurements(
-    ctx: ExecutionContext, input_path: Path, params: Dict[str, Any]
+    ctx: ExecutionContext, input_path: Path, params: Dict[str, Any], size_bytes: int
 ) -> List[QCMeasurement]:
     probe_data = probe_media(ctx.capabilities.ffprobe_path, input_path)
-    measurements = measure_container(probe_data, actual_size_bytes=input_path.stat().st_size)
+    measurements = measure_container(probe_data, actual_size_bytes=size_bytes)
     measurements += measure_audio_streams(probe_data)
 
     a_streams = audio_streams(probe_data)
@@ -329,11 +329,11 @@ def run_report(request: Request, ctx: ExecutionContext) -> Dict[str, Any]:
     video_duration_sec = None
 
     if request.kind == "video":
-        measurements = _gather_video_measurements(ctx, input_path, effective_parameters)
+        measurements = _gather_video_measurements(ctx, input_path, effective_parameters, size_bytes)
         duration_m = next((m for m in measurements if m.id == "container.duration_sec"), None)
         video_duration_sec = duration_m.value if duration_m else None
     elif request.kind == "audio":
-        measurements = _gather_audio_measurements(ctx, input_path, effective_parameters)
+        measurements = _gather_audio_measurements(ctx, input_path, effective_parameters, size_bytes)
     elif request.kind == "subtitle":
         ref_duration = None
         if reference_video_path is not None:
@@ -349,11 +349,11 @@ def run_report(request: Request, ctx: ExecutionContext) -> Dict[str, Any]:
         v = video_streams(fmt_probe)
         a = audio_streams(fmt_probe)
         if v:
-            measurements += _gather_video_measurements(ctx, input_path, effective_parameters)
+            measurements += _gather_video_measurements(ctx, input_path, effective_parameters, size_bytes)
         else:
             measurements += measure_video_streams(fmt_probe)
         if a:
-            measurements += _gather_audio_measurements(ctx, input_path, effective_parameters)
+            measurements += _gather_audio_measurements(ctx, input_path, effective_parameters, size_bytes)
         else:
             measurements += measure_audio_streams(fmt_probe)
         measurements = _dedupe_measurements(measurements)
