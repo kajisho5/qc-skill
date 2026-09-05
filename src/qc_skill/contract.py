@@ -25,7 +25,10 @@ from .rules import (
     DeliveryArtifactRule,
     DeliveryPackageRule,
     DeliveryRule,
+    SourceCue,
     SubtitleRule,
+    TimelineIntegrityRule,
+    TimelineSegment,
     VideoRule,
 )
 from .schemas import VALID_ARTIFACT_TYPES
@@ -52,7 +55,7 @@ SUPPORTED_AUDIO_MEASUREMENTS = [
 ]
 
 SUPPORTED_SUBTITLE_MEASUREMENTS = [
-    "subtitle.exists", "subtitle.format", "subtitle.cue_count", "subtitle.invalid_timestamps",
+    "subtitle.exists", "subtitle.format", "subtitle.cue_count", "subtitle.cues", "subtitle.invalid_timestamps",
     "subtitle.overlapping_cues", "subtitle.empty_cues", "subtitle.duplicate_ids",
     "subtitle.invalid_control_characters", "subtitle.duration_sec", "subtitle.coverage_ratio",
     "subtitle.duration_delta_sec", "subtitle.cue_density_per_min", "subtitle.excessive_line_length",
@@ -79,6 +82,7 @@ SUPPORTED_CHECKS = [
     "subtitle.no_duplicate_ids", "subtitle.no_control_characters", "subtitle.no_overlapping_cues",
     "subtitle.line_length_within_limit", "subtitle.cue_duration_within_limit", "subtitle.gaps_within_limit",
     "subtitle.duration_matches_video", "subtitle.coverage_within_limit",
+    "subtitle.timeline_mapping_matches_source",
     "delivery.file_size_within_limit", "delivery.extension_matches_expected", "delivery.container_matches_expected",
     "delivery_package.artifact_present", "delivery_package.artifact_size_within_limit",
     "delivery_package.artifact_extension_matches_expected",
@@ -133,6 +137,8 @@ FINDING_CATALOG = [
     ("SUBTITLE_GAP_EXCEEDED", "WARN"),
     ("SUBTITLE_DURATION_MISMATCH", "FAIL"),
     ("SUBTITLE_COVERAGE_LOW", "WARN"),
+    ("SUBTITLE_TIMELINE_CUE_COUNT_MISMATCH", "FAIL"),
+    ("SUBTITLE_TIMELINE_MAPPING_MISMATCH", "FAIL"),
     ("DELIVERY_FILE_TOO_SMALL", "FAIL"),
     ("DELIVERY_EXTENSION_MISMATCH", "FAIL"),
     ("DELIVERY_CONTAINER_MISMATCH", "FAIL"),
@@ -169,6 +175,9 @@ _NESTED_RULE_NAMES = {
     CrossArtifactRule: "delivery_package_cross_artifact",
     ArtifactDurationConsistencyRule: "delivery_package_duration_consistency",
     ArtifactDependencyRule: "delivery_package_dependency",
+    TimelineIntegrityRule: "timeline_integrity",
+    TimelineSegment: "timeline_segment",
+    SourceCue: "timeline_source_cue",
 }
 
 
@@ -207,6 +216,9 @@ def rules_contract_schema() -> Dict[str, Any]:
         "delivery_package_cross_artifact": _rule_schema(CrossArtifactRule),
         "delivery_package_duration_consistency": _rule_schema(ArtifactDurationConsistencyRule),
         "delivery_package_dependency": _rule_schema(ArtifactDependencyRule),
+        "timeline_integrity": _rule_schema(TimelineIntegrityRule),
+        "timeline_segment": _rule_schema(TimelineSegment),
+        "timeline_source_cue": _rule_schema(SourceCue),
     }
 
 

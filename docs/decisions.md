@@ -207,3 +207,51 @@ construction:
   implemented here because they are the only ones expressible as a typed
   numeric/boolean comparison over existing measurements; anything else
   stays out of scope until it can be expressed the same way.
+
+## ADR-012: timeline integrity is a read-only TimelineMap *consumer*, never a competing editing model
+
+Phase 3 (`feature/timeline-integrity-qc`) needs to check whether a
+delivery's subtitle cue timing is still correct *after* a trim/concat/
+speed edit, not just "correct relative to the source." The ecosystem read
+(Step 0 of the evolution plan) confirmed there is no single reusable
+general timeline object to adopt: `video_agent/temporal/timeline.py`'s
+`TimelineMap` is dormant and exists only for multi-camera sync (unrelated
+to edit history); the real general trim/concat/speed model is
+`video-editing-skill`'s own `Segment`/`Clip`, captured by the agent's
+adapter but never persisted downstream; and `agent/subtitles.py` has its
+own narrow, subtitle-cue-only reimplementation of the same remapping.
+qc-skill deliberately does not adopt, wrap, or reimplement any of these:
+
+- `TimelineSegment` (`rules.py`) is a minimal, qc-skill-local read-only
+  record - `source_start`, `source_end`, `delivery_start`, `speed` - that
+  the caller (the agent, which already has the real edit history from
+  whichever of the three sources above it uses) supplies as part of a
+  `SubtitleRule.timeline_integrity` rule. qc-skill never constructs one,
+  never infers cuts, never guesses which segments exist; it only maps a
+  given source timestamp through segments it was handed
+  (`_map_source_to_delivery`, a single pure arithmetic function - not an
+  editing algorithm).
+- The check compares the caller-supplied `source_cues` (the original,
+  pre-edit cue timing the caller asserts existed) - mapped through the
+  supplied `timeline` - against `subtitle.cues` (STEP: a new raw-cue-
+  timing measurement added alongside the existing derived subtitle
+  measurements, itself just parsed fact, no judgment). A source cue that
+  falls entirely inside a cut region (no segment contains it) is
+  `UNKNOWN`, not a guessed pass or fail, mirroring the freeze-segment
+  precedent in `evaluate_video` (violations found -> `FAIL`; otherwise
+  any unresolved case -> `UNKNOWN`; otherwise `PASS`).
+- This is added as a `SubtitleRule` field, not a new top-level kind or a
+  `delivery_package`-only feature, specifically so it is automatically
+  available everywhere a `SubtitleRule` already nests today (standalone
+  `kind: "subtitle"`, `kind: "delivery"`'s `subtitle` sub-rule, and
+  `kind: "delivery_package"`'s per-artifact `subtitle` sub-rule) without
+  new plumbing in `engine.py` at all - reuse over a parallel mechanism,
+  consistent with how every other nested rule in this skill already
+  works.
+- What this explicitly does not do, by design: reconstruct a timeline
+  from raw media (no scene-cut detection, no cross-correlation - that
+  would be exactly the "editing algorithm inside qc-skill" the evolution
+  plan forbids), or decide which of several conflicting timelines is
+  correct (that is still the agent's `Decision`, unchanged since ADR-001).
+  qc-skill only ever compares: a supplied `TimelineSegment` list, a
+  supplied source-cue list, and observed delivery-timeline cue timing.

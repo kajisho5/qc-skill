@@ -21,7 +21,10 @@ from .rules import (
     DeliveryArtifactRule,
     DeliveryPackageRule,
     DeliveryRule,
+    SourceCue,
     SubtitleRule,
+    TimelineIntegrityRule,
+    TimelineSegment,
     VideoRule,
 )
 
@@ -119,10 +122,74 @@ def _build_rule(cls, data: Optional[Dict[str, Any]]):
         kwargs["audio"] = _build_rule(AudioRule, kwargs["audio"])
     if "subtitle" in kwargs and kwargs["subtitle"] is not None:
         kwargs["subtitle"] = _build_rule(SubtitleRule, kwargs["subtitle"])
+    if "timeline_integrity" in kwargs and kwargs["timeline_integrity"] is not None:
+        kwargs["timeline_integrity"] = _build_timeline_integrity_rule(kwargs["timeline_integrity"])
     try:
         return cls(**kwargs)
     except TypeError as exc:
         raise error("INVALID_REQUEST", f"invalid rule payload for {cls.__name__}: {exc}")
+
+
+def _number(value: Any, *, field_name: str, allow_negative: bool = True) -> float:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        raise error("INVALID_REQUEST", f"{field_name} must be a number")
+    if not allow_negative and value < 0:
+        raise error("INVALID_REQUEST", f"{field_name} must not be negative")
+    return float(value)
+
+
+def _build_timeline_segment(item: Any) -> TimelineSegment:
+    if not isinstance(item, dict):
+        raise error("INVALID_REQUEST", "each entry in timeline_integrity.timeline must be an object")
+    unknown = set(item) - {"source_start", "source_end", "delivery_start", "speed"}
+    if unknown:
+        raise error("INVALID_REQUEST", f"unknown fields for a timeline segment: {sorted(unknown)}")
+    for key in ("source_start", "source_end", "delivery_start"):
+        if key not in item:
+            raise error("INVALID_REQUEST", f"timeline segment is missing required field {key!r}")
+    speed = _number(item.get("speed", 1.0), field_name="timeline segment.speed", allow_negative=False)
+    if speed == 0:
+        raise error("INVALID_REQUEST", "timeline segment.speed must be greater than zero")
+    return TimelineSegment(
+        source_start=_number(item["source_start"], field_name="timeline segment.source_start"),
+        source_end=_number(item["source_end"], field_name="timeline segment.source_end"),
+        delivery_start=_number(item["delivery_start"], field_name="timeline segment.delivery_start"),
+        speed=speed,
+    )
+
+
+def _build_source_cue(item: Any) -> SourceCue:
+    if not isinstance(item, dict):
+        raise error("INVALID_REQUEST", "each entry in timeline_integrity.source_cues must be an object")
+    unknown = set(item) - {"start", "end"}
+    if unknown:
+        raise error("INVALID_REQUEST", f"unknown fields for a source cue: {sorted(unknown)}")
+    if "start" not in item or "end" not in item:
+        raise error("INVALID_REQUEST", "a source cue requires both 'start' and 'end'")
+    return SourceCue(
+        start=_number(item["start"], field_name="source cue.start"),
+        end=_number(item["end"], field_name="source cue.end"),
+    )
+
+
+def _build_timeline_integrity_rule(data: Any) -> TimelineIntegrityRule:
+    if not isinstance(data, dict):
+        raise error("INVALID_REQUEST", "rule payload for TimelineIntegrityRule must be an object")
+    unknown = set(data) - {"timeline", "source_cues", "tolerance_sec"}
+    if unknown:
+        raise error("INVALID_REQUEST", f"unknown fields for TimelineIntegrityRule: {sorted(unknown)}")
+    timeline_data = data.get("timeline", [])
+    if not isinstance(timeline_data, list):
+        raise error("INVALID_REQUEST", "TimelineIntegrityRule.timeline must be a list")
+    source_cues_data = data.get("source_cues", [])
+    if not isinstance(source_cues_data, list):
+        raise error("INVALID_REQUEST", "TimelineIntegrityRule.source_cues must be a list")
+    tolerance_sec = _number(data.get("tolerance_sec", 0.1), field_name="TimelineIntegrityRule.tolerance_sec", allow_negative=False)
+    return TimelineIntegrityRule(
+        timeline=[_build_timeline_segment(s) for s in timeline_data],
+        source_cues=[_build_source_cue(c) for c in source_cues_data],
+        tolerance_sec=tolerance_sec,
+    )
 
 
 def _build_delivery_artifact_rule(data: Any) -> DeliveryArtifactRule:

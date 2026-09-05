@@ -102,7 +102,8 @@ stripped, never evaluated). Content/wording is never evaluated by an AI or
 otherwise.
 
 **Measurements** (`src/qc_skill/measurements/subtitle.py`): `subtitle.exists`,
-`subtitle.format`, `subtitle.cue_count`, `subtitle.invalid_timestamps`,
+`subtitle.format`, `subtitle.cue_count`, `subtitle.cues` (raw parsed
+per-cue `{index, start, end}`, in file order), `subtitle.invalid_timestamps`,
 `subtitle.overlapping_cues`, `subtitle.empty_cues`, `subtitle.duplicate_ids`,
 `subtitle.invalid_control_characters`, `subtitle.duration_sec`,
 `subtitle.coverage_ratio` (requires a reference video duration),
@@ -131,6 +132,30 @@ regardless of policy):
 | `subtitle.gaps_within_limit` | `max_gap_sec` | `SUBTITLE_GAP_EXCEEDED` |
 | `subtitle.duration_matches_video` | `max_duration_delta_sec` (needs `reference_video`) | `SUBTITLE_DURATION_MISMATCH` |
 | `subtitle.coverage_within_limit` | `min_coverage_ratio` (needs `reference_video`) | `SUBTITLE_COVERAGE_LOW` |
+
+### Timeline integrity (`timeline_integrity`, Phase 3, ADR-012)
+
+`SubtitleRule.timeline_integrity` (`TimelineIntegrityRule`: `timeline` -
+a caller-supplied list of `TimelineSegment {source_start, source_end,
+delivery_start, speed}`; `source_cues` - the cue timing as authored
+against the *source* timeline before the edit; `tolerance_sec`) checks
+whether this subtitle's actual delivery-timeline cue timing
+(`subtitle.cues`) still matches what the supplied timeline mapping says
+it should be, after a trim/concat/speed edit. qc-skill never constructs
+or infers the timeline itself - it only maps a given source timestamp
+through segments it was handed.
+
+| check_id | fails when | finding |
+|---|---|---|
+| `subtitle.timeline_mapping_matches_source` | actual cue count differs from `source_cues` count, or any mapped cue's expected delivery position differs from its actual position by more than `tolerance_sec` | `SUBTITLE_TIMELINE_CUE_COUNT_MISMATCH` / `SUBTITLE_TIMELINE_MAPPING_MISMATCH` |
+
+`UNKNOWN` (never a guessed `PASS`/`FAIL`) when a source cue falls
+entirely inside a cut region - no supplied segment covers it, so its
+expected delivery position cannot be computed. Because this is a
+`SubtitleRule` field, it is available anywhere a `SubtitleRule` nests:
+standalone `kind: "subtitle"`, `kind: "delivery"`'s `subtitle` sub-rule,
+and `kind: "delivery_package"`'s per-artifact `subtitle` sub-rule - no
+kind-specific plumbing was added for it.
 
 ## Delivery (`kind: "delivery"`)
 
