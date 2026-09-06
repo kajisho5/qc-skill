@@ -315,3 +315,42 @@ detection (ADR-005):
   (broadcast-safe vs. full-range web/streaming delivery legitimately
   differ) - qc-skill still never asserts "16-235 is required," only "here
   is where and how far outside 16-235 the signal went, if you care."
+
+## ADR-014: `provides` groups checks into ten Capability ids, matching media-analysis-skill's collision pair
+
+`contract.py` adds a top-level `provides` list for
+`kajisho5/AI-video-production-OS`'s `CapabilityContract.provides`
+(`docs/SPEC.md` there), so a registry can resolve "who provides
+`measure.audio.loudness`" without hardcoding this repository. The ten ids
+match those already assigned to this Skill's measurement groups in that
+project's own `docs/CAPABILITY_MATRIX.md` section 8, kept here in
+`contract.CAPABILITY_CHECK_GROUPS` as the single source of truth going
+forward. Grouping is coarser than `SUPPORTED_CHECKS`: several related
+checks judge one Capability (every `video.*_matches_expected` check is
+`measure.video.format`).
+
+Three of the ten ids - `measure.audio.loudness`, `measure.audio.silence`,
+`measure.audio.integrity` - are the ecosystem's one documented Capability
+collision (`CAPABILITY_MODEL.md`'s motivating example): media-analysis-skill
+independently implements the same three measurements with no shared code
+and publishes the identical id for each in its own `contract.py`, so a
+registry sees one Capability with two Providers, not two unrelated things
+that happen to share a name.
+
+One check, `audio.sample_rate_matches_expected`, is deliberately in no
+group (`contract.UNGROUPED_CHECKS`, enforced by
+`tests/test_contract_completeness.py`): `CAPABILITY_MATRIX.md` assigns no
+audio-format-shaped id today (only `measure.video.format` exists, and it
+is explicitly scoped to video), so forcing this check into
+`channel_layout` or `clipping_and_dynamics` would publish a capability
+grouping this project has not actually decided on, rather than leave the
+gap honest. This grouping predates Phase 1-4's new `delivery_package`/
+`cross_artifact`/`timeline_integrity`/`video.luminance_*` checks
+(ADR-010 through ADR-013): none of those new checks are in any Capability
+group yet, for the same reason `audio.sample_rate_matches_expected` isn't
+-- `CAPABILITY_MATRIX.md` has no assigned id for them today, so leaving
+them out is the honest state, not an oversight (see
+`tests/test_contract_completeness.py` for how ungrouped checks are kept
+an explicit, enforced set rather than a silent gap). Additive: a new
+top-level `provides` key, saying nothing `checks`/`measurements` don't
+already say, only indexed by Capability id instead of check id.

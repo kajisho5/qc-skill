@@ -151,6 +151,76 @@ FINDING_CATALOG = [
     ("DELIVERY_PACKAGE_DEPENDENCY_MISSING", "FAIL"),
 ]
 
+# Cross-repository Capability ids (kajisho5/AI-video-production-OS docs/SPEC.md
+# `CapabilityContract.provides`), matching the ids already assigned to these check groups
+# in that project's own docs/CAPABILITY_MATRIX.md section 8. Three of these
+# (measure.audio.loudness, measure.audio.silence, measure.audio.integrity) are the
+# ecosystem's one documented Capability collision: media-analysis-skill independently
+# implements the same three measurements and publishes the identical id for each in its
+# own contract.py, so a registry sees one Capability with two Providers, not two
+# unrelated things that happen to share a name.
+#
+# Grouping is coarser than SUPPORTED_CHECKS: several related checks judge one Capability
+# (every video.*_matches_expected check is measure.video.format). One check,
+# audio.sample_rate_matches_expected, is intentionally not in any group:
+# CAPABILITY_MATRIX.md assigns no audio-format-shaped id today (only measure.video.format
+# exists, and it is explicitly scoped to video), so forcing it into channel_layout or
+# clipping_and_dynamics would misrepresent a capability grouping this project has not
+# actually decided on yet - see docs/decisions.md ADR-009.
+CAPABILITY_CHECK_GROUPS: Dict[str, list] = {
+    "measure.video.freeze": ["video.freeze_frames_within_tolerance"],
+    "measure.video.black_frame": ["video.black_frames_within_tolerance"],
+    "measure.video.format": [
+        "video.resolution_matches_expected", "video.frame_rate_matches_expected", "video.codec_matches_expected",
+        "video.pixel_format_matches_expected", "video.aspect_ratio_matches_expected",
+    ],
+    "measure.audio.integrity": [
+        "video.stream_present", "video.decodes_without_errors",
+        "audio.stream_present_matches_expected", "audio.decodes_without_errors",
+    ],
+    "measure.audio.clipping_and_dynamics": [
+        "audio.no_clipping", "audio.true_peak_within_tolerance", "audio.loudness_range_within_tolerance",
+    ],
+    "measure.audio.channel_layout": [
+        "audio.channels_match_expected", "audio.channel_layout_matches_expected", "audio.channel_balance_within_tolerance",
+    ],
+    "measure.audio.silence": [
+        "audio.leading_silence_within_tolerance", "audio.trailing_silence_within_tolerance", "audio.internal_silence_within_tolerance",
+    ],
+    "measure.audio.loudness": ["audio.integrated_loudness_within_tolerance"],
+    "measure.subtitle.timing": [
+        "subtitle.presence_matches_expected", "subtitle.timestamps_valid", "subtitle.no_empty_cues",
+        "subtitle.no_duplicate_ids", "subtitle.no_control_characters", "subtitle.no_overlapping_cues",
+        "subtitle.line_length_within_limit", "subtitle.cue_duration_within_limit", "subtitle.gaps_within_limit",
+        "subtitle.duration_matches_video", "subtitle.coverage_within_limit",
+    ],
+    "measure.delivery.integrity": [
+        "delivery.file_size_within_limit", "delivery.extension_matches_expected", "delivery.container_matches_expected",
+    ],
+}
+
+# Phase 1-4's delivery_package/cross_artifact/timeline_integrity/luminance checks
+# (ADR-010 through ADR-013) postdate this grouping's own CAPABILITY_MATRIX.md audit --
+# left ungrouped for the same reason audio.sample_rate_matches_expected is (ADR-014):
+# no assigned Capability id exists for them today, so leaving them out is the honest
+# state, not an oversight.
+UNGROUPED_CHECKS = [
+    "audio.sample_rate_matches_expected",
+    "delivery_package.artifact_extension_matches_expected",
+    "delivery_package.artifact_present",
+    "delivery_package.artifact_size_within_limit",
+    "delivery_package.dependency_satisfied",
+    "delivery_package.duration_consistent",
+    "subtitle.timeline_mapping_matches_source",
+    "video.luminance_within_legal_range",
+]
+
+
+def capability_provides() -> list:
+    return [{"id": cap_id, "lifecycle": "EXPERIMENTAL", "tool_id": f"{SKILL_ID}/run", "checks": sorted(checks)}
+            for cap_id, checks in sorted(CAPABILITY_CHECK_GROUPS.items())]
+
+
 _CATEGORY_PREFIXES = {"VIDEO": "video", "AUDIO": "audio", "SUBTITLE": "subtitle", "DELIVERY": "delivery"}
 
 
@@ -252,6 +322,7 @@ def skill_contract() -> Dict[str, Any]:
         "not_provided": NOT_PROVIDED,
         "operations": SUPPORTED_OPERATIONS,
         "kinds": SUPPORTED_KINDS,
+        "provides": capability_provides(),
         "capabilities": {
             "required": ["ffprobe"],
             "optional": ["ffmpeg", "filter:blackdetect", "filter:freezedetect", "filter:ebur128", "filter:astats", "filter:silencedetect"],

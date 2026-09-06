@@ -118,6 +118,24 @@ measurements/checks/findings per kind
 same list - the contract only ever advertises what is actually
 implemented.
 
+`contract["provides"]` groups these checks into ten cross-repository
+Capability ids (`measure.video.freeze`, `measure.video.black_frame`,
+`measure.video.format`, `measure.audio.integrity`,
+`measure.audio.clipping_and_dynamics`, `measure.audio.channel_layout`,
+`measure.audio.silence`, `measure.audio.loudness`,
+`measure.subtitle.timing`, `measure.delivery.integrity`), matching the ids
+assigned to this Skill in
+[`kajisho5/AI-video-production-OS`](https://github.com/kajisho5/AI-video-production-OS)'s
+`docs/CAPABILITY_MATRIX.md`. Three of them - `measure.audio.loudness`,
+`measure.audio.silence`, `measure.audio.integrity` - are also independently
+implemented by `media-analysis-skill`, which publishes the identical ids:
+this is that project's one documented Capability collision, and the two
+Skills agreeing on the id (with no shared code) is what makes a future
+registry able to see it as one Capability with two Providers instead of
+two unrelated things that happen to share a name. See
+`docs/decisions.md` ADR-009 for the full check-to-id mapping and the one
+check (`audio.sample_rate_matches_expected`) deliberately left ungrouped.
+
 ## Measurement vs. Rule vs. Finding
 
 ```

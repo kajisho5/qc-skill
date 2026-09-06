@@ -159,3 +159,47 @@ def test_docs_checks_reference_lists_every_check_id():
     docs_text = docs_path.read_text(encoding="utf-8")
     missing_from_docs = [c for c in contract_module.SUPPORTED_CHECKS if c not in docs_text]
     assert not missing_from_docs, f"check ids missing from docs/checks.md: {missing_from_docs}"
+
+
+def test_capability_check_groups_only_reference_real_checks():
+    declared = set(contract_module.SUPPORTED_CHECKS)
+    grouped = {c for checks in contract_module.CAPABILITY_CHECK_GROUPS.values() for c in checks}
+    phantom = grouped - declared
+    assert not phantom, f"contract.CAPABILITY_CHECK_GROUPS references checks that do not exist: {sorted(phantom)}"
+
+
+def test_every_check_is_grouped_or_explicitly_left_ungrouped():
+    declared = set(contract_module.SUPPORTED_CHECKS)
+    grouped = {c for checks in contract_module.CAPABILITY_CHECK_GROUPS.values() for c in checks}
+    ungrouped = set(contract_module.UNGROUPED_CHECKS)
+    unaccounted = declared - grouped - ungrouped
+    assert not unaccounted, f"checks not in any CAPABILITY_CHECK_GROUPS entry and not in UNGROUPED_CHECKS: {sorted(unaccounted)}"
+
+
+def test_no_check_is_both_grouped_and_explicitly_ungrouped():
+    grouped = {c for checks in contract_module.CAPABILITY_CHECK_GROUPS.values() for c in checks}
+    overlap = grouped & set(contract_module.UNGROUPED_CHECKS)
+    assert not overlap, f"checks listed in both a capability group and UNGROUPED_CHECKS: {sorted(overlap)}"
+
+
+def test_no_check_appears_in_more_than_one_capability_group():
+    seen: dict = {}
+    duplicates = []
+    for cap_id, checks in contract_module.CAPABILITY_CHECK_GROUPS.items():
+        for c in checks:
+            if c in seen:
+                duplicates.append((c, seen[c], cap_id))
+            seen[c] = cap_id
+    assert not duplicates, f"checks assigned to more than one Capability id: {duplicates}"
+
+
+def test_capability_provides_shape():
+    provides = contract_module.capability_provides()
+    ids = [p["id"] for p in provides]
+    assert ids == sorted(ids)
+    assert len(ids) == len(set(ids))
+    for entry in provides:
+        assert entry.keys() == {"id", "lifecycle", "tool_id", "checks"}
+        assert entry["lifecycle"] == "EXPERIMENTAL"
+        assert entry["tool_id"] == "qc/run"
+        assert entry["checks"] == sorted(entry["checks"])
