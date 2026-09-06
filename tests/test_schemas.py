@@ -100,6 +100,17 @@ def test_parse_request_accepts_typed_video_rule():
     assert req.video_rule.expected_height == 1080
 
 
+def test_parse_request_accepts_luminance_rule_and_parameters():
+    doc = base_doc(
+        operation="check",
+        rules={"video": {"max_single_luminance_excursion_sec": 1.0, "max_total_luminance_excursion_sec": 3.0}},
+        parameters={"luminance_legal_min": 0, "luminance_legal_max": 255},
+    )
+    req = parse_request(doc)
+    assert req.video_rule.max_single_luminance_excursion_sec == 1.0
+    assert req.parameters["luminance_legal_max"] == 255
+
+
 def test_parse_request_rejects_invalid_cache_policy():
     doc = base_doc(cache_policy="sometimes")
     with pytest.raises(QCError) as exc:
@@ -130,3 +141,189 @@ def test_parse_request_nested_delivery_rule():
     req = parse_request(doc)
     assert req.delivery_rule.expected_extension == "mp4"
     assert req.delivery_rule.video.expected_width == 1920
+
+
+def _package_doc(**overrides):
+    doc = {
+        "operation": "inspect", "kind": "delivery_package",
+        "artifacts": [{"artifact_id": "main_video", "artifact_type": "video", "path": "a.mp4"}],
+    }
+    doc.update(overrides)
+    return doc
+
+
+def test_parse_request_delivery_package_minimal_ok():
+    req = parse_request(_package_doc())
+    assert req.input is None
+    assert req.artifacts[0].artifact_id == "main_video"
+    assert req.artifacts[0].artifact_type == "video"
+    assert req.artifacts[0].path == "a.mp4"
+
+
+def test_parse_request_delivery_package_requires_non_empty_artifacts():
+    with pytest.raises(QCError) as exc:
+        parse_request(_package_doc(artifacts=[]))
+    assert exc.value.code == "INVALID_REQUEST"
+
+
+def test_parse_request_artifacts_rejected_for_non_package_kind():
+    doc = base_doc(artifacts=[{"artifact_id": "x", "artifact_type": "video", "path": "a.mp4"}])
+    with pytest.raises(QCError) as exc:
+        parse_request(doc)
+    assert exc.value.code == "INVALID_REQUEST"
+
+
+def test_parse_request_rejects_duplicate_artifact_ids():
+    doc = _package_doc(artifacts=[
+        {"artifact_id": "dup", "artifact_type": "video", "path": "a.mp4"},
+        {"artifact_id": "dup", "artifact_type": "subtitle", "path": "a.srt"},
+    ])
+    with pytest.raises(QCError) as exc:
+        parse_request(doc)
+    assert exc.value.code == "INVALID_REQUEST"
+
+
+def test_parse_request_rejects_unknown_artifact_type():
+    doc = _package_doc(artifacts=[{"artifact_id": "x", "artifact_type": "banana", "path": "a.mp4"}])
+    with pytest.raises(QCError) as exc:
+        parse_request(doc)
+    assert exc.value.code == "INVALID_REQUEST"
+
+
+def test_parse_request_rejects_unknown_artifact_entry_field():
+    doc = _package_doc(artifacts=[{"artifact_id": "x", "artifact_type": "video", "path": "a.mp4", "fingerprint": "deadbeef"}])
+    with pytest.raises(QCError) as exc:
+        parse_request(doc)
+    assert exc.value.code == "INVALID_REQUEST"
+
+
+def test_parse_request_delivery_package_rule_with_nested_video_rule():
+    doc = _package_doc(
+        operation="check",
+        rules={"delivery_package": {"artifacts": [
+            {"artifact_id": "main_video", "required": True, "video": {"expected_width": 1920}},
+        ]}},
+    )
+    req = parse_request(doc)
+    artifact_rule = req.delivery_package_rule.artifacts[0]
+    assert artifact_rule.artifact_id == "main_video"
+    assert artifact_rule.required is True
+    assert artifact_rule.video.expected_width == 1920
+
+
+def test_parse_request_rejects_duplicate_artifact_ids_in_rule():
+    doc = _package_doc(
+        rules={"delivery_package": {"artifacts": [
+            {"artifact_id": "dup"}, {"artifact_id": "dup"},
+        ]}},
+    )
+    with pytest.raises(QCError) as exc:
+        parse_request(doc)
+    assert exc.value.code == "INVALID_REQUEST"
+
+
+def test_parse_request_rejects_delivery_package_artifact_rule_without_id():
+    doc = _package_doc(rules={"delivery_package": {"artifacts": [{"required": True}]}})
+    with pytest.raises(QCError) as exc:
+        parse_request(doc)
+    assert exc.value.code == "INVALID_REQUEST"
+
+
+def test_parse_request_cross_artifact_duration_consistency():
+    doc = _package_doc(rules={"delivery_package": {"cross_artifact": {"duration_consistency": [
+        {"artifact_ids": ["a", "b"], "max_delta_sec": 0.5},
+    ]}}})
+    req = parse_request(doc)
+    rule = req.delivery_package_rule.cross_artifact.duration_consistency[0]
+    assert rule.artifact_ids == ["a", "b"]
+    assert rule.max_delta_sec == 0.5
+
+
+def test_parse_request_cross_artifact_dependency():
+    doc = _package_doc(rules={"delivery_package": {"cross_artifact": {"dependencies": [
+        {"artifact_id": "a", "requires_artifact_id": "b"},
+    ]}}})
+    req = parse_request(doc)
+    rule = req.delivery_package_rule.cross_artifact.dependencies[0]
+    assert rule.artifact_id == "a"
+    assert rule.requires_artifact_id == "b"
+
+
+def test_parse_request_rejects_duration_consistency_with_one_artifact_id():
+    doc = _package_doc(rules={"delivery_package": {"cross_artifact": {"duration_consistency": [
+        {"artifact_ids": ["a"], "max_delta_sec": 0.5},
+    ]}}})
+    with pytest.raises(QCError) as exc:
+        parse_request(doc)
+    assert exc.value.code == "INVALID_REQUEST"
+
+
+def test_parse_request_rejects_negative_max_delta_sec():
+    doc = _package_doc(rules={"delivery_package": {"cross_artifact": {"duration_consistency": [
+        {"artifact_ids": ["a", "b"], "max_delta_sec": -1},
+    ]}}})
+    with pytest.raises(QCError) as exc:
+        parse_request(doc)
+    assert exc.value.code == "INVALID_REQUEST"
+
+
+def test_parse_request_rejects_unknown_cross_artifact_field():
+    doc = _package_doc(rules={"delivery_package": {"cross_artifact": {"bogus": []}}})
+    with pytest.raises(QCError) as exc:
+        parse_request(doc)
+    assert exc.value.code == "INVALID_REQUEST"
+
+
+def test_parse_request_rejects_dependency_missing_field():
+    doc = _package_doc(rules={"delivery_package": {"cross_artifact": {"dependencies": [
+        {"artifact_id": "a"},
+    ]}}})
+    with pytest.raises(QCError) as exc:
+        parse_request(doc)
+    assert exc.value.code == "INVALID_REQUEST"
+
+
+def test_parse_request_timeline_integrity_rule():
+    doc = base_doc(kind="subtitle", rules={"subtitle": {"timeline_integrity": {
+        "timeline": [{"source_start": 0, "source_end": 10, "delivery_start": 0}],
+        "source_cues": [{"start": 1.0, "end": 2.0}],
+        "tolerance_sec": 0.2,
+    }}})
+    req = parse_request(doc)
+    ti = req.subtitle_rule.timeline_integrity
+    assert ti.timeline[0].source_start == 0
+    assert ti.timeline[0].speed == 1.0  # default
+    assert ti.source_cues[0].start == 1.0
+    assert ti.tolerance_sec == 0.2
+
+
+def test_parse_request_timeline_integrity_defaults():
+    doc = base_doc(kind="subtitle", rules={"subtitle": {"timeline_integrity": {}}})
+    req = parse_request(doc)
+    ti = req.subtitle_rule.timeline_integrity
+    assert ti.timeline == []
+    assert ti.source_cues == []
+    assert ti.tolerance_sec == 0.1
+
+
+def test_parse_request_rejects_unknown_timeline_integrity_field():
+    doc = base_doc(kind="subtitle", rules={"subtitle": {"timeline_integrity": {"bogus": []}}})
+    with pytest.raises(QCError) as exc:
+        parse_request(doc)
+    assert exc.value.code == "INVALID_REQUEST"
+
+
+def test_parse_request_rejects_source_cue_missing_end():
+    doc = base_doc(kind="subtitle", rules={"subtitle": {"timeline_integrity": {
+        "source_cues": [{"start": 1.0}],
+    }}})
+    with pytest.raises(QCError) as exc:
+        parse_request(doc)
+    assert exc.value.code == "INVALID_REQUEST"
+
+
+def test_parse_request_rejects_negative_tolerance_sec():
+    doc = base_doc(kind="subtitle", rules={"subtitle": {"timeline_integrity": {"tolerance_sec": -0.1}}})
+    with pytest.raises(QCError) as exc:
+        parse_request(doc)
+    assert exc.value.code == "INVALID_REQUEST"

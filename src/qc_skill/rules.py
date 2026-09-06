@@ -21,7 +21,7 @@ Two kinds of checks are produced:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from typing import Any, Dict, List, Optional, Tuple
 
 from .models import FindingSeverity, QCCheck, QCFinding, QCMeasurement, QCStatus
@@ -91,6 +91,8 @@ class VideoRule:
     max_total_black_sec: Optional[float] = None
     max_single_freeze_sec: Optional[float] = None
     max_total_freeze_sec: Optional[float] = None
+    max_single_luminance_excursion_sec: Optional[float] = None
+    max_total_luminance_excursion_sec: Optional[float] = None
     max_decode_errors: int = 0  # baseline tolerance; 0 = any decode error fails
 
 
@@ -275,6 +277,31 @@ def evaluate_video(
             f = QCFinding(
                 "VIDEO_FREEZE_EXCEEDED", FindingSeverity.FAIL, "; ".join(violations),
                 evidence={"segments": segments, "total_sec": total, "longest_sec": longest}, measurement_ids=["video.freeze_segments"],
+            )
+            findings.append(f)
+            check.finding_codes.append(f.code)
+        checks.append(check)
+
+    # --- policy: luminance-range excursions (ADR-013) ---
+    if rule.max_single_luminance_excursion_sec is not None or rule.max_total_luminance_excursion_sec is not None:
+        segments = _val(measurements, "video.luminance_excursions") or []
+        durations = [s["duration"] for s in segments]
+        total = sum(durations)
+        longest = max(durations, default=0.0)
+        violations = []
+        if rule.max_single_luminance_excursion_sec is not None and longest > rule.max_single_luminance_excursion_sec:
+            violations.append(f"longest luminance excursion {longest}s exceeds {rule.max_single_luminance_excursion_sec}s")
+        if rule.max_total_luminance_excursion_sec is not None and total > rule.max_total_luminance_excursion_sec:
+            violations.append(f"total luminance excursion duration {total}s exceeds {rule.max_total_luminance_excursion_sec}s")
+        status = QCStatus.FAIL if violations else QCStatus.PASS
+        check = QCCheck(
+            "video.luminance_within_legal_range", "video", status, ["video.luminance_excursions"],
+            evidence={"total_sec": total, "longest_sec": longest},
+        )
+        if violations:
+            f = QCFinding(
+                "VIDEO_LUMINANCE_OUT_OF_RANGE", FindingSeverity.FAIL, "; ".join(violations),
+                evidence={"segments": segments, "total_sec": total, "longest_sec": longest}, measurement_ids=["video.luminance_excursions"],
             )
             findings.append(f)
             check.finding_codes.append(f.code)
@@ -517,6 +544,47 @@ def evaluate_audio(measurements: MeasurementMap, rule: Optional[AudioRule]) -> T
 
 
 @dataclass
+class TimelineSegment:
+    """One caller-supplied source-to-delivery time mapping (ADR-012).
+
+    qc-skill never constructs, infers, or reconstructs these - they come
+    from whatever the agent already knows about its own edit history.
+    ``[source_start, source_end)`` of the *source* timeline appears in the
+    delivery starting at ``delivery_start``, played at ``speed``x (2.0 =
+    twice as fast, so half the source duration on the delivery timeline).
+    """
+
+    source_start: float
+    source_end: float
+    delivery_start: float
+    speed: float = 1.0
+
+
+@dataclass
+class SourceCue:
+    """One cue's timing as authored against the *source* timeline, before
+    whatever trim/concat/speed edit produced the delivery."""
+
+    start: float
+    end: float
+
+
+@dataclass
+class TimelineIntegrityRule:
+    timeline: List[TimelineSegment] = field(default_factory=list)
+    source_cues: List[SourceCue] = field(default_factory=list)
+    tolerance_sec: float = 0.1
+
+
+def _map_source_to_delivery(timeline: List[TimelineSegment], source_time: float) -> Optional[float]:
+    for segment in timeline:
+        if segment.source_start <= source_time <= segment.source_end:
+            speed = segment.speed or 1.0
+            return segment.delivery_start + (source_time - segment.source_start) / speed
+    return None  # source_time falls in a cut region - not covered by any segment
+
+
+@dataclass
 class SubtitleRule:
     require_subtitle: Optional[bool] = None
     max_line_length: Optional[int] = None
@@ -526,6 +594,65 @@ class SubtitleRule:
     min_coverage_ratio: Optional[float] = None
     allow_overlapping_cues: bool = False
     allow_duplicate_ids: bool = False
+    timeline_integrity: Optional[TimelineIntegrityRule] = None
+
+
+def _evaluate_timeline_integrity(
+    measurements: MeasurementMap, rule: TimelineIntegrityRule
+) -> Tuple[QCCheck, Optional[QCFinding]]:
+    """Does this subtitle's delivery-timeline cue timing match what the
+    caller-supplied ``timeline`` says it should be, given the cue timing
+    the caller asserts existed on the *source* timeline (ADR-012)?
+
+    Only ever compares supplied data against ``subtitle.cues`` (observed
+    fact) - never reconstructs a timeline, never infers which cues were
+    cut.
+    """
+
+    actual_cues = _val(measurements, "subtitle.cues") or []
+
+    if len(actual_cues) != len(rule.source_cues):
+        evidence = {"actual_cue_count": len(actual_cues), "expected_cue_count": len(rule.source_cues)}
+        finding = QCFinding(
+            "SUBTITLE_TIMELINE_CUE_COUNT_MISMATCH", FindingSeverity.FAIL,
+            f"delivery has {len(actual_cues)} cue(s) but the supplied timeline mapping expects {len(rule.source_cues)}",
+            evidence=evidence, measurement_ids=["subtitle.cues"],
+        )
+        check = QCCheck("subtitle.timeline_mapping_matches_source", "subtitle", QCStatus.FAIL, ["subtitle.cues"], evidence=evidence, finding_codes=[finding.code])
+        return check, finding
+
+    mismatches = []
+    unresolved = []
+    for i, (source_cue, actual) in enumerate(zip(rule.source_cues, actual_cues)):
+        expected_start = _map_source_to_delivery(rule.timeline, source_cue.start)
+        expected_end = _map_source_to_delivery(rule.timeline, source_cue.end)
+        if expected_start is None or expected_end is None:
+            unresolved.append(i)
+            continue
+        actual_start, actual_end = actual.get("start"), actual.get("end")
+        if (
+            actual_start is None or actual_end is None
+            or abs(actual_start - expected_start) > rule.tolerance_sec
+            or abs(actual_end - expected_end) > rule.tolerance_sec
+        ):
+            mismatches.append({
+                "cue_index": i,
+                "expected": {"start": expected_start, "end": expected_end},
+                "actual": {"start": actual_start, "end": actual_end},
+            })
+
+    evidence = {"mismatches": mismatches, "unresolved_source_cues": unresolved}
+    if mismatches:
+        finding = QCFinding(
+            "SUBTITLE_TIMELINE_MAPPING_MISMATCH", FindingSeverity.FAIL,
+            f"{len(mismatches)} cue(s) do not match their expected delivery-timeline position under the supplied timeline mapping",
+            evidence=evidence, measurement_ids=["subtitle.cues"],
+        )
+        return QCCheck("subtitle.timeline_mapping_matches_source", "subtitle", QCStatus.FAIL, ["subtitle.cues"], evidence=evidence, finding_codes=[finding.code]), finding
+    if unresolved:
+        reason = f"source cue(s) at index {unresolved} fall outside every timeline segment (a cut region) - cannot verify"
+        return QCCheck("subtitle.timeline_mapping_matches_source", "subtitle", QCStatus.UNKNOWN, ["subtitle.cues"], evidence=evidence, reason=reason), None
+    return QCCheck("subtitle.timeline_mapping_matches_source", "subtitle", QCStatus.PASS, ["subtitle.cues"], evidence=evidence), None
 
 
 def evaluate_subtitle(measurements: MeasurementMap, rule: Optional[SubtitleRule]) -> Tuple[List[QCCheck], List[QCFinding]]:
@@ -665,6 +792,12 @@ def evaluate_subtitle(measurements: MeasurementMap, rule: Optional[SubtitleRule]
                 check.finding_codes.append(f.code)
             checks.append(check)
 
+    if rule.timeline_integrity is not None:
+        check, finding = _evaluate_timeline_integrity(measurements, rule.timeline_integrity)
+        checks.append(check)
+        if finding is not None:
+            findings.append(finding)
+
     return checks, findings
 
 
@@ -732,5 +865,240 @@ def evaluate_delivery_basics(measurements: MeasurementMap, rule: DeliveryRule) -
             findings.append(f)
             check.finding_codes.append(f.code)
         checks.append(check)
+
+    return checks, findings
+
+
+# ---------------------------------------------------------------------------
+# Delivery package (N named artifacts validated together as one delivery -
+# see ADR-010: a new kind, deliberately not an extension of DeliveryRule)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class DeliveryArtifactRule:
+    """The QC policy for one named artifact inside a delivery package.
+
+    ``artifact_id`` must match an entry in the request's own ``artifacts``
+    list - that list (not this rule) is what actually names the file
+    paths, exactly like ``request.subtitle``/``request.reference_video``
+    are separate from ``DeliveryRule`` today. ``artifact_type``, when
+    given, is cross-checked against the request's declared type for the
+    same id (a caller-side sanity check, not a security boundary).
+    """
+
+    artifact_id: str
+    artifact_type: Optional[str] = None
+    required: bool = True
+    expected_extension: Optional[str] = None
+    min_size_bytes: Optional[int] = None
+    video: Optional[VideoRule] = None
+    audio: Optional[AudioRule] = None
+    subtitle: Optional[SubtitleRule] = None
+
+
+@dataclass
+class ArtifactDurationConsistencyRule:
+    """N artifacts (by id, e.g. the main video and its subtitle) whose
+    measured durations must agree within a caller-chosen tolerance. Reads
+    ``container.duration_sec`` (video/audio) or ``subtitle.duration_sec``
+    (subtitle) from each named artifact's own already-gathered
+    measurements - never re-reads a file or compares anything semantic.
+    """
+
+    artifact_ids: List[str]
+    max_delta_sec: float
+
+
+@dataclass
+class ArtifactDependencyRule:
+    """If ``artifact_id`` is present, ``requires_artifact_id`` must be too."""
+
+    artifact_id: str
+    requires_artifact_id: str
+
+
+@dataclass
+class CrossArtifactRule:
+    duration_consistency: List[ArtifactDurationConsistencyRule] = field(default_factory=list)
+    dependencies: List[ArtifactDependencyRule] = field(default_factory=list)
+
+
+@dataclass
+class DeliveryPackageRule:
+    artifacts: List[DeliveryArtifactRule] = field(default_factory=list)
+    cross_artifact: Optional[CrossArtifactRule] = None
+
+
+def _artifact_duration_sec(amap: MeasurementMap) -> Optional[float]:
+    for measurement_id in ("container.duration_sec", "subtitle.duration_sec"):
+        value = _val(amap, measurement_id)
+        if value is not None:
+            return value
+    return None
+
+
+def _evaluate_cross_artifact(
+    rule: CrossArtifactRule, per_artifact_measurements: Dict[str, MeasurementMap]
+) -> Tuple[List[QCCheck], List[QCFinding]]:
+    checks: List[QCCheck] = []
+    findings: List[QCFinding] = []
+
+    for dc in rule.duration_consistency:
+        durations: Dict[str, float] = {}
+        unresolved: List[str] = []
+        for aid in dc.artifact_ids:
+            duration = _artifact_duration_sec(per_artifact_measurements.get(aid, {}))
+            if duration is None:
+                unresolved.append(aid)
+            else:
+                durations[aid] = duration
+
+        if unresolved:
+            checks.append(
+                _unknown_check(
+                    "delivery_package.duration_consistent", "delivery_package",
+                    f"duration could not be measured for: {unresolved}", [],
+                )
+            )
+            continue
+
+        spread = max(durations.values()) - min(durations.values())
+        status = QCStatus.PASS if spread <= dc.max_delta_sec else QCStatus.FAIL
+        check = QCCheck(
+            "delivery_package.duration_consistent", "delivery_package", status, [],
+            evidence={"durations": durations, "spread_sec": spread, "max_delta_sec": dc.max_delta_sec},
+        )
+        if status == QCStatus.FAIL:
+            f = QCFinding(
+                "DELIVERY_PACKAGE_DURATION_MISMATCH", FindingSeverity.FAIL,
+                f"artifact durations differ by {spread}s (max allowed {dc.max_delta_sec}s): {durations}",
+                evidence={"durations": durations, "spread_sec": spread, "max_delta_sec": dc.max_delta_sec},
+            )
+            findings.append(f)
+            check.finding_codes.append(f.code)
+        checks.append(check)
+
+    for dep in rule.dependencies:
+        present = bool(_val(per_artifact_measurements.get(dep.artifact_id, {}), "delivery_package.artifact_present"))
+        if not present:
+            continue  # the dependent artifact isn't here at all; nothing to enforce
+
+        dep_present = bool(
+            _val(per_artifact_measurements.get(dep.requires_artifact_id, {}), "delivery_package.artifact_present")
+        )
+        status = QCStatus.PASS if dep_present else QCStatus.FAIL
+        check = QCCheck(
+            "delivery_package.dependency_satisfied", "delivery_package", status, [],
+            evidence={"artifact_id": dep.artifact_id, "requires_artifact_id": dep.requires_artifact_id},
+        )
+        if status == QCStatus.FAIL:
+            f = QCFinding(
+                "DELIVERY_PACKAGE_DEPENDENCY_MISSING", FindingSeverity.FAIL,
+                f"artifact {dep.artifact_id!r} is present but its required companion {dep.requires_artifact_id!r} is not",
+                evidence={"artifact_id": dep.artifact_id, "requires_artifact_id": dep.requires_artifact_id},
+            )
+            findings.append(f)
+            check.finding_codes.append(f.code)
+        checks.append(check)
+
+    return checks, findings
+
+
+def evaluate_delivery_package(
+    rule: DeliveryPackageRule, per_artifact_measurements: Dict[str, MeasurementMap]
+) -> Tuple[List[QCCheck], List[QCFinding]]:
+    """Structural, per-artifact checks only (STEP: Phase 1 scope).
+
+    Deliberately does not compare artifacts against each other - that is
+    cross-artifact validation (Phase 2, ``feature/cross-artifact-qc``),
+    a distinct, not-yet-built capability. This only asks, for each
+    artifact this rule names: is it present (when required), the right
+    size/extension, and - if a nested video/audio/subtitle rule was
+    given - does *that one artifact* pass those checks on its own.
+    """
+
+    checks: List[QCCheck] = []
+    findings: List[QCFinding] = []
+
+    for artifact_rule in rule.artifacts:
+        aid = artifact_rule.artifact_id
+        amap = per_artifact_measurements.get(aid, {})
+        present = bool(_val(amap, "delivery_package.artifact_present"))
+
+        status = QCStatus.FAIL if (artifact_rule.required and not present) else QCStatus.PASS
+        check = QCCheck(
+            "delivery_package.artifact_present", "delivery_package", status,
+            ["delivery_package.artifact_present"], artifact_id=aid,
+        )
+        if status == QCStatus.FAIL:
+            f = QCFinding(
+                "DELIVERY_PACKAGE_ARTIFACT_MISSING", FindingSeverity.FAIL,
+                f"required artifact {aid!r} is not present in the delivery package",
+                measurement_ids=["delivery_package.artifact_present"], artifact_id=aid,
+            )
+            findings.append(f)
+            check.finding_codes.append(f.code)
+        checks.append(check)
+
+        if not present:
+            continue  # nothing else can be evaluated for an absent artifact
+
+        if artifact_rule.min_size_bytes is not None:
+            size = _val(amap, "delivery_package.artifact_size_bytes")
+            status = QCStatus.PASS if (size is not None and size >= artifact_rule.min_size_bytes) else QCStatus.FAIL
+            check = QCCheck(
+                "delivery_package.artifact_size_within_limit", "delivery_package", status,
+                ["delivery_package.artifact_size_bytes"], artifact_id=aid,
+            )
+            if status == QCStatus.FAIL:
+                f = QCFinding(
+                    "DELIVERY_PACKAGE_ARTIFACT_TOO_SMALL", FindingSeverity.FAIL,
+                    f"artifact {aid!r} size {size} bytes is below the minimum {artifact_rule.min_size_bytes} bytes",
+                    evidence={"actual": size, "min_required": artifact_rule.min_size_bytes},
+                    measurement_ids=["delivery_package.artifact_size_bytes"], artifact_id=aid,
+                )
+                findings.append(f)
+                check.finding_codes.append(f.code)
+            checks.append(check)
+
+        if artifact_rule.expected_extension is not None:
+            actual_ext = _val(amap, "delivery_package.artifact_extension")
+            status = QCStatus.PASS if actual_ext == artifact_rule.expected_extension.lower() else QCStatus.FAIL
+            check = QCCheck(
+                "delivery_package.artifact_extension_matches_expected", "delivery_package", status,
+                ["delivery_package.artifact_extension"], artifact_id=aid,
+            )
+            if status == QCStatus.FAIL:
+                f = QCFinding(
+                    "DELIVERY_PACKAGE_ARTIFACT_EXTENSION_MISMATCH", FindingSeverity.FAIL,
+                    f"artifact {aid!r} extension {actual_ext!r} does not match expected {artifact_rule.expected_extension!r}",
+                    evidence={"actual": actual_ext, "expected": artifact_rule.expected_extension},
+                    measurement_ids=["delivery_package.artifact_extension"], artifact_id=aid,
+                )
+                findings.append(f)
+                check.finding_codes.append(f.code)
+            checks.append(check)
+
+        if artifact_rule.video is not None:
+            duration = _val(amap, "container.duration_sec")
+            c, f = evaluate_video(amap, artifact_rule.video, duration)
+            checks += [replace(x, artifact_id=aid) for x in c]
+            findings += [replace(x, artifact_id=aid) for x in f]
+
+        if artifact_rule.audio is not None:
+            c, f = evaluate_audio(amap, artifact_rule.audio)
+            checks += [replace(x, artifact_id=aid) for x in c]
+            findings += [replace(x, artifact_id=aid) for x in f]
+
+        if artifact_rule.subtitle is not None:
+            c, f = evaluate_subtitle(amap, artifact_rule.subtitle)
+            checks += [replace(x, artifact_id=aid) for x in c]
+            findings += [replace(x, artifact_id=aid) for x in f]
+
+    if rule.cross_artifact is not None:
+        c, f = _evaluate_cross_artifact(rule.cross_artifact, per_artifact_measurements)
+        checks += c
+        findings += f
 
     return checks, findings

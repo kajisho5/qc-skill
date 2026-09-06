@@ -124,6 +124,59 @@ as a miss, never returned as a successful reuse.
   entry (useful for a caller that wants to assert "this was already
   checked").
 
+## Delivery package (`kind: "delivery_package"`)
+
+A delivery is often more than one file - a video plus a subtitle plus a
+thumbnail plus a metadata sidecar - produced independently by several
+skills. `kind: "delivery_package"` validates N *named* artifacts as one
+unit, without qc-skill ever importing a `ProductionPlan`/agent-side type
+directly (ADR-010, `docs/decisions.md`):
+
+```
+request.artifacts:            [{artifact_id, artifact_type, path}, ...]   # what exists (typed, request-side)
+rules.delivery_package.artifacts: [DeliveryArtifactRule, ...]              # what's expected of each (typed, rule-side)
+```
+
+The two lists are paired by `artifact_id`, mirroring how `request.subtitle`
+is already separate from `DeliveryRule` today. `fingerprint` is never a
+caller-supplied field - qc-skill always computes it itself
+(`sha256_file`) from the resolved file, the same stance ADR-008 already
+takes for cache reuse.
+
+A required artifact that is genuinely absent is a normal, reportable
+`FAIL` (`DELIVERY_PACKAGE_ARTIFACT_MISSING`), not a request-level error:
+`PathPolicy.resolve_input(path, must_exist=False)` still enforces every
+other boundary (traversal, control characters, not-a-regular-file,
+outside the allowed input roots) exactly as it does for every other kind
+- only "the file does not exist" is downgraded from an exception to a
+measurement, and only for this kind.
+
+Because several artifacts in one report can produce a measurement with
+the same id (two subtitle artifacts both have `subtitle.cue_count`),
+`QCMeasurement`/`QCCheck`/`QCFinding` all carry an optional `artifact_id`
+field (`None` for every other kind) to disambiguate them.
+
+Per-artifact checks (Phase 1) ask, for one artifact at a time: is it
+present when required, the right size/extension, and (if a nested
+`video`/`audio`/`subtitle` rule was given) does that one artifact pass
+those checks on its own - never compared against anything else in the
+package.
+
+**Cross-artifact validation** (`rules.delivery_package.cross_artifact`,
+Phase 2, ADR-011) compares *different* artifacts against each other:
+duration consistency (`ArtifactDurationConsistencyRule`) and
+presence dependency (`ArtifactDependencyRule`). Both are typed
+relationship rules over measurements the per-artifact gathering already
+produced - never a string comparison, never LLM/semantic judgment
+("does the subtitle's wording match the video" is out of scope
+everywhere in qc-skill, not just here). See `docs/checks.md` for the
+full check/finding list.
+
+**Still explicitly out of scope**: timeline-aware validation (does a
+delivery's subtitle cue timing survive a trim/concat/speed edit) is
+Phase 3 (`docs/qc-evolution-gap-analysis.md`), a distinct, not-yet-built
+capability.
+
 ## Relationship to other skills
 
 - **`ffmpeg-skill` / `media-analysis-skill`** - general-purpose

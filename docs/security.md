@@ -41,7 +41,12 @@
   (`Path.relative_to`), never a string prefix check (so `/w/media` never
   matches `/w/media_evil`). A symlink inside an allowed root that points
   outside it is rejected, because containment is checked *after*
-  resolution.
+  resolution. `kind: "delivery_package"` calls `resolve_input(...,
+  must_exist=False)`: every check above still applies exactly as written
+  - only "the file does not exist" is downgraded from an exception to
+  `None` (reported as a normal `delivery_package.artifact_present: false`
+  measurement), because a named artifact genuinely being absent is a
+  reportable QC fact for this kind, not a malformed request.
 - **Output/report** (`resolve_output`): rejects absolute paths and `..`
   segments outright, validates the filename (`check_filename`: rejects
   Windows-reserved device names `CON`/`PRN`/`AUX`/`NUL`/`COM1-9`/`LPT1-9`,

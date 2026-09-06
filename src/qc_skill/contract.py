@@ -17,17 +17,31 @@ from typing import Any, Dict
 from . import CONTRACT_VERSION, PACKAGE_NAME, SKILL_ID, VERSION
 from .capabilities import REQUIRED_FILTERS, detect_capabilities
 from .errors import ERROR_CODES
-from .rules import AudioRule, DeliveryRule, SubtitleRule, VideoRule
+from .rules import (
+    ArtifactDependencyRule,
+    ArtifactDurationConsistencyRule,
+    AudioRule,
+    CrossArtifactRule,
+    DeliveryArtifactRule,
+    DeliveryPackageRule,
+    DeliveryRule,
+    SourceCue,
+    SubtitleRule,
+    TimelineIntegrityRule,
+    TimelineSegment,
+    VideoRule,
+)
+from .schemas import VALID_ARTIFACT_TYPES
 
 SUPPORTED_OPERATIONS = ["inspect", "check", "validate"]
-SUPPORTED_KINDS = ["video", "audio", "subtitle", "delivery"]
+SUPPORTED_KINDS = ["video", "audio", "subtitle", "delivery", "delivery_package"]
 
 SUPPORTED_VIDEO_MEASUREMENTS = [
     "container.format_name", "container.duration_sec", "container.size_bytes", "container.bit_rate",
     "video.stream_present", "video.stream_count", "video.codec", "video.width", "video.height",
     "video.aspect_ratio", "video.frame_rate", "video.frame_count", "video.pixel_format",
     "video.color_range", "video.color_space", "video.color_transfer", "video.color_primaries", "video.field_order",
-    "video.black_segments", "video.freeze_segments", "video.decoded_frame_count",
+    "video.black_segments", "video.freeze_segments", "video.luminance_excursions", "video.decoded_frame_count",
     "video.decode_error_count", "video.decode_errors", "video.frame_count_delta",
 ]
 
@@ -41,7 +55,7 @@ SUPPORTED_AUDIO_MEASUREMENTS = [
 ]
 
 SUPPORTED_SUBTITLE_MEASUREMENTS = [
-    "subtitle.exists", "subtitle.format", "subtitle.cue_count", "subtitle.invalid_timestamps",
+    "subtitle.exists", "subtitle.format", "subtitle.cue_count", "subtitle.cues", "subtitle.invalid_timestamps",
     "subtitle.overlapping_cues", "subtitle.empty_cues", "subtitle.duplicate_ids",
     "subtitle.invalid_control_characters", "subtitle.duration_sec", "subtitle.coverage_ratio",
     "subtitle.duration_delta_sec", "subtitle.cue_density_per_min", "subtitle.excessive_line_length",
@@ -50,10 +64,16 @@ SUPPORTED_SUBTITLE_MEASUREMENTS = [
 
 SUPPORTED_DELIVERY_MEASUREMENTS = ["delivery.extension"] + SUPPORTED_VIDEO_MEASUREMENTS + SUPPORTED_AUDIO_MEASUREMENTS + SUPPORTED_SUBTITLE_MEASUREMENTS
 
+SUPPORTED_DELIVERY_PACKAGE_MEASUREMENTS = [
+    "delivery_package.artifact_present", "delivery_package.artifact_size_bytes",
+    "delivery_package.artifact_extension", "delivery_package.artifact_fingerprint",
+] + SUPPORTED_VIDEO_MEASUREMENTS + SUPPORTED_AUDIO_MEASUREMENTS + SUPPORTED_SUBTITLE_MEASUREMENTS
+
 SUPPORTED_CHECKS = [
     "video.stream_present", "video.decodes_without_errors", "video.resolution_matches_expected",
     "video.frame_rate_matches_expected", "video.codec_matches_expected", "video.pixel_format_matches_expected",
     "video.aspect_ratio_matches_expected", "video.black_frames_within_tolerance", "video.freeze_frames_within_tolerance",
+    "video.luminance_within_legal_range",
     "audio.stream_present_matches_expected", "audio.decodes_without_errors", "audio.no_clipping",
     "audio.sample_rate_matches_expected", "audio.channels_match_expected", "audio.channel_layout_matches_expected",
     "audio.leading_silence_within_tolerance", "audio.trailing_silence_within_tolerance",
@@ -63,7 +83,11 @@ SUPPORTED_CHECKS = [
     "subtitle.no_duplicate_ids", "subtitle.no_control_characters", "subtitle.no_overlapping_cues",
     "subtitle.line_length_within_limit", "subtitle.cue_duration_within_limit", "subtitle.gaps_within_limit",
     "subtitle.duration_matches_video", "subtitle.coverage_within_limit",
+    "subtitle.timeline_mapping_matches_source",
     "delivery.file_size_within_limit", "delivery.extension_matches_expected", "delivery.container_matches_expected",
+    "delivery_package.artifact_present", "delivery_package.artifact_size_within_limit",
+    "delivery_package.artifact_extension_matches_expected",
+    "delivery_package.duration_consistent", "delivery_package.dependency_satisfied",
 ]
 
 SUPPORTED_FORMATS = {
@@ -88,6 +112,7 @@ FINDING_CATALOG = [
     ("VIDEO_ASPECT_MISMATCH", "FAIL"),
     ("VIDEO_BLACK_FRAMES_EXCEEDED", "FAIL"),
     ("VIDEO_FREEZE_EXCEEDED", "FAIL"),
+    ("VIDEO_LUMINANCE_OUT_OF_RANGE", "FAIL"),
     ("AUDIO_STREAM_MISSING", "FAIL"),
     ("AUDIO_STREAM_UNEXPECTED", "FAIL"),
     ("AUDIO_DECODE_ERROR", "FAIL"),
@@ -114,9 +139,16 @@ FINDING_CATALOG = [
     ("SUBTITLE_GAP_EXCEEDED", "WARN"),
     ("SUBTITLE_DURATION_MISMATCH", "FAIL"),
     ("SUBTITLE_COVERAGE_LOW", "WARN"),
+    ("SUBTITLE_TIMELINE_CUE_COUNT_MISMATCH", "FAIL"),
+    ("SUBTITLE_TIMELINE_MAPPING_MISMATCH", "FAIL"),
     ("DELIVERY_FILE_TOO_SMALL", "FAIL"),
     ("DELIVERY_EXTENSION_MISMATCH", "FAIL"),
     ("DELIVERY_CONTAINER_MISMATCH", "FAIL"),
+    ("DELIVERY_PACKAGE_ARTIFACT_MISSING", "FAIL"),
+    ("DELIVERY_PACKAGE_ARTIFACT_TOO_SMALL", "FAIL"),
+    ("DELIVERY_PACKAGE_ARTIFACT_EXTENSION_MISMATCH", "FAIL"),
+    ("DELIVERY_PACKAGE_DURATION_MISMATCH", "FAIL"),
+    ("DELIVERY_PACKAGE_DEPENDENCY_MISSING", "FAIL"),
 ]
 
 # Cross-repository Capability ids (kajisho5/AI-video-production-OS docs/SPEC.md
@@ -167,7 +199,21 @@ CAPABILITY_CHECK_GROUPS: Dict[str, list] = {
     ],
 }
 
-UNGROUPED_CHECKS = ["audio.sample_rate_matches_expected"]
+# Phase 1-4's delivery_package/cross_artifact/timeline_integrity/luminance checks
+# (ADR-010 through ADR-013) postdate this grouping's own CAPABILITY_MATRIX.md audit --
+# left ungrouped for the same reason audio.sample_rate_matches_expected is (ADR-014):
+# no assigned Capability id exists for them today, so leaving them out is the honest
+# state, not an oversight.
+UNGROUPED_CHECKS = [
+    "audio.sample_rate_matches_expected",
+    "delivery_package.artifact_extension_matches_expected",
+    "delivery_package.artifact_present",
+    "delivery_package.artifact_size_within_limit",
+    "delivery_package.dependency_satisfied",
+    "delivery_package.duration_consistent",
+    "subtitle.timeline_mapping_matches_source",
+    "video.luminance_within_legal_range",
+]
 
 
 def capability_provides() -> list:
@@ -179,6 +225,8 @@ _CATEGORY_PREFIXES = {"VIDEO": "video", "AUDIO": "audio", "SUBTITLE": "subtitle"
 
 
 def _finding_category(code: str) -> str:
+    if code.startswith("DELIVERY_PACKAGE_"):
+        return "delivery_package"
     return _CATEGORY_PREFIXES[code.split("_", 1)[0]]
 
 NOT_PROVIDED = [
@@ -193,7 +241,16 @@ NOT_PROVIDED = [
 ]
 
 
-_NESTED_RULE_NAMES = {VideoRule: "video", AudioRule: "audio", SubtitleRule: "subtitle"}
+_NESTED_RULE_NAMES = {
+    VideoRule: "video", AudioRule: "audio", SubtitleRule: "subtitle",
+    DeliveryArtifactRule: "delivery_package_artifact",
+    CrossArtifactRule: "delivery_package_cross_artifact",
+    ArtifactDurationConsistencyRule: "delivery_package_duration_consistency",
+    ArtifactDependencyRule: "delivery_package_dependency",
+    TimelineIntegrityRule: "timeline_integrity",
+    TimelineSegment: "timeline_segment",
+    SourceCue: "timeline_source_cue",
+}
 
 
 def _type_name(t: Any) -> str:
@@ -226,6 +283,14 @@ def rules_contract_schema() -> Dict[str, Any]:
         "audio": _rule_schema(AudioRule),
         "subtitle": _rule_schema(SubtitleRule),
         "delivery": _rule_schema(DeliveryRule),
+        "delivery_package": _rule_schema(DeliveryPackageRule),
+        "delivery_package_artifact": _rule_schema(DeliveryArtifactRule),
+        "delivery_package_cross_artifact": _rule_schema(CrossArtifactRule),
+        "delivery_package_duration_consistency": _rule_schema(ArtifactDurationConsistencyRule),
+        "delivery_package_dependency": _rule_schema(ArtifactDependencyRule),
+        "timeline_integrity": _rule_schema(TimelineIntegrityRule),
+        "timeline_segment": _rule_schema(TimelineSegment),
+        "timeline_source_cue": _rule_schema(SourceCue),
     }
 
 
@@ -263,14 +328,16 @@ def skill_contract() -> Dict[str, Any]:
             "optional": ["ffmpeg", "filter:blackdetect", "filter:freezedetect", "filter:ebur128", "filter:astats", "filter:silencedetect"],
         },
         "inputs": {
-            "input": "media or subtitle file path (one primary artifact per request)",
+            "input": "media or subtitle file path (one primary artifact per request; not accepted for kind=delivery_package)",
             "subtitle": "companion subtitle file path (kind=delivery only)",
             "reference_video": "companion video file path, for duration comparison (kind=subtitle only)",
+            "artifacts": "list of {artifact_id, artifact_type, path} - N named artifacts validated together (kind=delivery_package only, required and non-empty for it)",
         },
         "outputs": ["report"],
         "parameters": sorted(
             {
                 "black_min_duration_sec", "black_pixel_threshold", "freeze_noise_db", "freeze_min_duration_sec",
+                "luminance_legal_min", "luminance_legal_max",
                 "silence_threshold_db", "silence_min_duration_sec", "clipping_threshold_dbfs",
                 "max_line_length", "max_cue_duration_sec", "max_gap_sec",
             }
@@ -280,11 +347,13 @@ def skill_contract() -> Dict[str, Any]:
             "audio": SUPPORTED_AUDIO_MEASUREMENTS,
             "subtitle": SUPPORTED_SUBTITLE_MEASUREMENTS,
             "delivery": SUPPORTED_DELIVERY_MEASUREMENTS,
+            "delivery_package": SUPPORTED_DELIVERY_PACKAGE_MEASUREMENTS,
         },
         "checks": SUPPORTED_CHECKS,
         "rules": rules_contract_schema(),
         "findings": findings_contract_catalog(),
         "formats": SUPPORTED_FORMATS,
+        "delivery_package": {"artifact_types": sorted(VALID_ARTIFACT_TYPES)},
         "statuses": ["PASS", "WARN", "FAIL", "UNKNOWN"],
         "execution": {
             "mode": "local_subprocess",

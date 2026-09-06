@@ -1,9 +1,11 @@
 # qc-skill
 
 Deterministic media quality control / validation. `qc-skill` measures and
-checks video, audio, subtitle, and delivery artifacts, and reports
-structured `PASS` / `WARN` / `FAIL` / `UNKNOWN` results with the evidence
-behind each one.
+checks video, audio, subtitle, and delivery artifacts - a single file, or
+(`kind: "delivery_package"`) N named artifacts (video + subtitle +
+thumbnail + metadata, ...) validated together as one delivery - and
+reports structured `PASS` / `WARN` / `FAIL` / `UNKNOWN` results with the
+evidence behind each one.
 
 **`qc-skill` is not an AI agent and does not make production decisions.**
 It never decides whether a video may ship, whether it should be
@@ -110,7 +112,8 @@ whoever invokes the process - never by the request body itself (see
 ## Kinds, measurements, checks
 
 See [docs/checks.md](docs/checks.md) for the full, current list of
-measurements/checks/findings per kind (video/audio/subtitle/delivery).
+measurements/checks/findings per kind
+(video/audio/subtitle/delivery/delivery_package).
 `qc contract --json` is the authoritative, machine-readable version of the
 same list - the contract only ever advertises what is actually
 implemented.
@@ -209,6 +212,9 @@ fixtures are generated.
   checks catalog
 - [docs/decisions.md](docs/decisions.md) - key design decisions (ADRs)
 - [docs/testing.md](docs/testing.md) - test matrix and fixtures
+- [docs/qc-evolution-gap-analysis.md](docs/qc-evolution-gap-analysis.md) -
+  competitor/ecosystem research behind the multi-skill-pipeline QC
+  evolution (delivery gate, cross-artifact, timeline integrity)
 
 ## License
 

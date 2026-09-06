@@ -94,6 +94,7 @@ def test_every_implemented_measurement_is_in_the_contract():
         | set(contract_module.SUPPORTED_AUDIO_MEASUREMENTS)
         | set(contract_module.SUPPORTED_SUBTITLE_MEASUREMENTS)
         | set(contract_module.SUPPORTED_DELIVERY_MEASUREMENTS)
+        | set(contract_module.SUPPORTED_DELIVERY_PACKAGE_MEASUREMENTS)
     )
     missing_from_contract = actual - declared
     assert not missing_from_contract, f"implemented but not advertised in any contract measurement list: {sorted(missing_from_contract)}"
@@ -106,6 +107,7 @@ def test_contract_never_advertises_a_measurement_that_does_not_exist():
         | set(contract_module.SUPPORTED_AUDIO_MEASUREMENTS)
         | set(contract_module.SUPPORTED_SUBTITLE_MEASUREMENTS)
         | set(contract_module.SUPPORTED_DELIVERY_MEASUREMENTS)
+        | set(contract_module.SUPPORTED_DELIVERY_PACKAGE_MEASUREMENTS)
     )
     phantom = declared - actual
     assert not phantom, f"advertised but never produced by any measurements module: {sorted(phantom)}"

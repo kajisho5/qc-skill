@@ -28,6 +28,9 @@ _FREEZE_START_RE = re.compile(r"lavfi\.freezedetect\.freeze_start:\s*([\d.]+)")
 _FREEZE_DURATION_RE = re.compile(r"lavfi\.freezedetect\.freeze_duration:\s*([\d.]+)")
 _FREEZE_END_RE = re.compile(r"lavfi\.freezedetect\.freeze_end:\s*([\d.]+)")
 _FRAME_PROGRESS_RE = re.compile(r"frame=\s*(\d+)")
+_FRAME_HEADER_RE = re.compile(r"^frame:\d+\s+pts:-?\d+\s+pts_time:(-?[\d.]+)")
+_YMIN_RE = re.compile(r"^lavfi\.signalstats\.YMIN=(\d+)")
+_YMAX_RE = re.compile(r"^lavfi\.signalstats\.YMAX=(\d+)")
 
 
 def _gcd_ratio(width: int, height: int) -> str:
@@ -192,6 +195,67 @@ class VideoDefectResult:
     skip_reason: Optional[str] = None
 
 
+def _parse_luminance_frames(stdout: str) -> List[Dict[str, Any]]:
+    """One entry per frame: ``{pts_time, ymin, ymax}``, from
+    ``signalstats,metadata=print:file=-`` (written to stdout, never
+    stderr, so it never interferes with the blackdetect/freezedetect/
+    decode-error parsing above, which all read stderr).
+    """
+
+    frames: List[Dict[str, Any]] = []
+    pts_time: Optional[float] = None
+    ymin: Optional[int] = None
+    ymax: Optional[int] = None
+
+    def _flush() -> None:
+        if pts_time is not None and ymin is not None and ymax is not None:
+            frames.append({"pts_time": pts_time, "ymin": ymin, "ymax": ymax})
+
+    for line in stdout.splitlines():
+        m = _FRAME_HEADER_RE.match(line)
+        if m:
+            _flush()
+            pts_time, ymin, ymax = float(m.group(1)), None, None
+            continue
+        m = _YMIN_RE.match(line)
+        if m:
+            ymin = int(m.group(1))
+            continue
+        m = _YMAX_RE.match(line)
+        if m:
+            ymax = int(m.group(1))
+            continue
+    _flush()
+    return frames
+
+
+def _build_luminance_excursions(frames: List[Dict[str, Any]], legal_min: int, legal_max: int) -> List[Dict[str, Any]]:
+    """Contiguous runs of frames whose Y value fell outside
+    ``[legal_min, legal_max]``, merged into segments the same way
+    ``black_segments``/``freeze_segments`` already are (ADR-013).
+    """
+
+    segments: List[Dict[str, Any]] = []
+    seg_start: Optional[float] = None
+    seg_min: Optional[int] = None
+    seg_max: Optional[int] = None
+    last_time: Optional[float] = None
+
+    for f in frames:
+        if f["ymin"] < legal_min or f["ymax"] > legal_max:
+            if seg_start is None:
+                seg_start, seg_min, seg_max = f["pts_time"], f["ymin"], f["ymax"]
+            else:
+                seg_min, seg_max = min(seg_min, f["ymin"]), max(seg_max, f["ymax"])
+            last_time = f["pts_time"]
+        elif seg_start is not None:
+            segments.append({"start": seg_start, "end": last_time, "duration": last_time - seg_start, "min_y": seg_min, "max_y": seg_max})
+            seg_start = None
+    if seg_start is not None:
+        segments.append({"start": seg_start, "end": last_time, "duration": last_time - seg_start, "min_y": seg_min, "max_y": seg_max})
+    return segments
+
+
 def analyze_video_defects(
     ffmpeg_path: str,
     input_path: Path,
@@ -202,19 +266,26 @@ def analyze_video_defects(
     black_pixel_threshold: float = 0.10,
     freeze_noise_db: float = -60.0,
     freeze_min_duration: float = 1.0,
+    luminance_legal_min: int = 16,
+    luminance_legal_max: int = 235,
     timeout: float = 120.0,
 ) -> VideoDefectResult:
-    """One full decode pass: black-frame + freeze-frame + integrity.
+    """One full decode pass: black-frame + freeze-frame + integrity +
+    luminance-range excursions.
 
-    All three are derived from the same ffmpeg invocation (decode to null
-    with blackdetect+freezedetect on the video filter chain, log level
-    'info' so filter reports and decoder error/warning lines are both
-    captured) to avoid decoding the file three times.
+    All of these are derived from the same ffmpeg invocation (decode to
+    null with blackdetect+freezedetect+signalstats on the video filter
+    chain, log level 'info' so filter reports and decoder error/warning
+    lines are both captured) to avoid decoding the file more than once
+    (ADR-006). ``signalstats,metadata=print:file=-`` writes to *stdout*
+    specifically so it never mixes with the stderr-based parsing below.
     """
 
     filters = [
         f"blackdetect=d={black_min_duration}:pix_th={black_pixel_threshold}",
         f"freezedetect=n={freeze_noise_db}dB:d={freeze_min_duration}",
+        "signalstats",
+        "metadata=print:file=-",
     ]
     argv = ffmpeg_analysis_argv(
         ffmpeg_path,
@@ -271,9 +342,17 @@ def analyze_video_defects(
 
     error_lines = extract_decode_errors(lines)
 
+    luminance_frames = _parse_luminance_frames(result.stdout)
+    luminance_excursions = _build_luminance_excursions(luminance_frames, luminance_legal_min, luminance_legal_max)
+
     measurements = [
         QCMeasurement("video.black_segments", "video", "black_segments", black_segments, source="ffmpeg:blackdetect"),
         QCMeasurement("video.freeze_segments", "video", "freeze_segments", freeze_segments, source="ffmpeg:freezedetect"),
+        QCMeasurement(
+            "video.luminance_excursions", "video", "luminance_excursions", luminance_excursions,
+            source="ffmpeg:signalstats",
+            notes=f"Y outside [{luminance_legal_min}, {luminance_legal_max}] (8-bit); a single-frame excursion reports duration 0.0, not its display duration",
+        ),
         QCMeasurement(
             "video.decoded_frame_count", "video", "decoded_frame_count", decoded_frame_count,
             source="ffmpeg:decode",

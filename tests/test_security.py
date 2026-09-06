@@ -22,6 +22,48 @@ def test_resolve_input_rejects_missing_file(tmp_path):
     assert exc.value.code == "MISSING_INPUT"
 
 
+def test_resolve_input_must_exist_false_returns_none_for_missing_file(tmp_path):
+    policy = PathPolicy(workspace=str(tmp_path))
+    assert policy.resolve_input(str(tmp_path / "missing.mp4"), must_exist=False) is None
+
+
+def test_resolve_input_must_exist_false_still_returns_path_when_present(tmp_path):
+    f = tmp_path / "a.mp4"
+    f.write_bytes(b"data")
+    policy = PathPolicy(workspace=str(tmp_path))
+    assert policy.resolve_input(str(f), must_exist=False) == f.resolve()
+
+
+def test_resolve_input_must_exist_false_still_rejects_traversal(tmp_path):
+    policy = PathPolicy(workspace=str(tmp_path))
+    with pytest.raises(QCError) as exc:
+        policy.resolve_input("../../etc/passwd", must_exist=False)
+    assert exc.value.code == "PATH_NOT_ALLOWED"
+
+
+def test_resolve_input_must_exist_false_still_enforces_allowed_roots_when_file_exists(tmp_path):
+    allowed = tmp_path / "allowed"
+    allowed.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    f = outside / "a.mp4"
+    f.write_bytes(b"data")
+
+    policy = PathPolicy(workspace=str(tmp_path), allowed_input_roots=[str(allowed)])
+    with pytest.raises(QCError) as exc:
+        policy.resolve_input(str(f), must_exist=False)
+    assert exc.value.code == "PATH_NOT_ALLOWED"
+
+
+def test_resolve_input_must_exist_false_still_rejects_directory(tmp_path):
+    d = tmp_path / "adir"
+    d.mkdir()
+    policy = PathPolicy(workspace=str(tmp_path))
+    with pytest.raises(QCError) as exc:
+        policy.resolve_input(str(d), must_exist=False)
+    assert exc.value.code == "INVALID_INPUT"
+
+
 def test_resolve_input_rejects_traversal(tmp_path):
     policy = PathPolicy(workspace=str(tmp_path))
     with pytest.raises(QCError) as exc:

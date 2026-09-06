@@ -185,6 +185,11 @@ def measure_subtitle(
         QCMeasurement("subtitle.exists", "subtitle", "exists", True, source="OBSERVED"),
         QCMeasurement("subtitle.format", "subtitle", "format", parsed.format, source="OBSERVED"),
         QCMeasurement("subtitle.cue_count", "subtitle", "cue_count", len(cues), source="OBSERVED"),
+        QCMeasurement(
+            "subtitle.cues", "subtitle", "cues",
+            [{"index": c.index, "start": c.start, "end": c.end} for c in cues],
+            source="OBSERVED", notes="raw parsed cue timing, in file order - start/end are null for a cue with a timestamp error",
+        ),
     ]
 
     invalid_timestamps = []
