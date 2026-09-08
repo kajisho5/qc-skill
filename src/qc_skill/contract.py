@@ -39,7 +39,7 @@ SUPPORTED_KINDS = ["video", "audio", "subtitle", "delivery", "delivery_package"]
 SUPPORTED_VIDEO_MEASUREMENTS = [
     "container.format_name", "container.duration_sec", "container.size_bytes", "container.bit_rate",
     "video.stream_present", "video.stream_count", "video.codec", "video.width", "video.height",
-    "video.aspect_ratio", "video.frame_rate", "video.frame_count", "video.pixel_format",
+    "video.aspect_ratio", "video.frame_rate", "video.variable_frame_rate_suspected", "video.frame_count", "video.pixel_format",
     "video.color_range", "video.color_space", "video.color_transfer", "video.color_primaries", "video.field_order",
     "video.black_segments", "video.freeze_segments", "video.luminance_excursions", "video.decoded_frame_count",
     "video.decode_error_count", "video.decode_errors", "video.frame_count_delta",
@@ -70,9 +70,13 @@ SUPPORTED_DELIVERY_PACKAGE_MEASUREMENTS = [
 ] + SUPPORTED_VIDEO_MEASUREMENTS + SUPPORTED_AUDIO_MEASUREMENTS + SUPPORTED_SUBTITLE_MEASUREMENTS
 
 SUPPORTED_CHECKS = [
-    "video.stream_present", "video.decodes_without_errors", "video.resolution_matches_expected",
-    "video.frame_rate_matches_expected", "video.codec_matches_expected", "video.pixel_format_matches_expected",
-    "video.aspect_ratio_matches_expected", "video.black_frames_within_tolerance", "video.freeze_frames_within_tolerance",
+    "video.stream_present", "video.decodes_without_errors", "video.duration_within_limit",
+    "video.resolution_matches_expected", "video.resolution_meets_minimum",
+    "video.frame_rate_matches_expected", "video.frame_rate_is_constant", "video.codec_matches_expected",
+    "video.pixel_format_matches_expected", "video.aspect_ratio_matches_expected",
+    "video.color_range_matches_expected", "video.color_space_matches_expected",
+    "video.color_transfer_matches_expected", "video.color_primaries_matches_expected",
+    "video.black_frames_within_tolerance", "video.freeze_frames_within_tolerance",
     "video.luminance_within_legal_range",
     "audio.stream_present_matches_expected", "audio.decodes_without_errors", "audio.no_clipping",
     "audio.sample_rate_matches_expected", "audio.channels_match_expected", "audio.channel_layout_matches_expected",
@@ -105,11 +109,18 @@ SUPPORTED_FORMATS = {
 FINDING_CATALOG = [
     ("VIDEO_STREAM_MISSING", "FAIL"),
     ("VIDEO_DECODE_ERROR", "FAIL"),
+    ("VIDEO_DURATION_EXCEEDED", "FAIL"),
     ("VIDEO_RESOLUTION_MISMATCH", "FAIL"),
+    ("VIDEO_RESOLUTION_BELOW_MINIMUM", "FAIL"),
     ("VIDEO_FPS_MISMATCH", "FAIL"),
+    ("VIDEO_VARIABLE_FRAME_RATE", "FAIL"),
     ("VIDEO_CODEC_MISMATCH", "FAIL"),
     ("VIDEO_PIXEL_FORMAT_MISMATCH", "FAIL"),
     ("VIDEO_ASPECT_MISMATCH", "FAIL"),
+    ("VIDEO_COLOR_RANGE_MISMATCH", "FAIL"),
+    ("VIDEO_COLOR_SPACE_MISMATCH", "FAIL"),
+    ("VIDEO_COLOR_TRANSFER_MISMATCH", "FAIL"),
+    ("VIDEO_COLOR_PRIMARIES_MISMATCH", "FAIL"),
     ("VIDEO_BLACK_FRAMES_EXCEEDED", "FAIL"),
     ("VIDEO_FREEZE_EXCEEDED", "FAIL"),
     ("VIDEO_LUMINANCE_OUT_OF_RANGE", "FAIL"),
@@ -142,6 +153,7 @@ FINDING_CATALOG = [
     ("SUBTITLE_TIMELINE_CUE_COUNT_MISMATCH", "FAIL"),
     ("SUBTITLE_TIMELINE_MAPPING_MISMATCH", "FAIL"),
     ("DELIVERY_FILE_TOO_SMALL", "FAIL"),
+    ("DELIVERY_FILE_TOO_LARGE", "FAIL"),
     ("DELIVERY_EXTENSION_MISMATCH", "FAIL"),
     ("DELIVERY_CONTAINER_MISMATCH", "FAIL"),
     ("DELIVERY_PACKAGE_ARTIFACT_MISSING", "FAIL"),
@@ -173,6 +185,8 @@ CAPABILITY_CHECK_GROUPS: Dict[str, list] = {
     "measure.video.format": [
         "video.resolution_matches_expected", "video.frame_rate_matches_expected", "video.codec_matches_expected",
         "video.pixel_format_matches_expected", "video.aspect_ratio_matches_expected",
+        "video.color_range_matches_expected", "video.color_space_matches_expected",
+        "video.color_transfer_matches_expected", "video.color_primaries_matches_expected",
     ],
     "measure.audio.integrity": [
         "video.stream_present", "video.decodes_without_errors",
@@ -213,6 +227,9 @@ UNGROUPED_CHECKS = [
     "delivery_package.duration_consistent",
     "subtitle.timeline_mapping_matches_source",
     "video.luminance_within_legal_range",
+    "video.duration_within_limit",
+    "video.resolution_meets_minimum",
+    "video.frame_rate_is_constant",
 ]
 
 

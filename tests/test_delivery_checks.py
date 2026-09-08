@@ -40,6 +40,39 @@ def test_delivery_min_size_fails_for_tiny_requirement_violation(media, workspace
     assert checks["delivery.file_size_within_limit"]["status"] == "FAIL"
 
 
+def test_delivery_max_size_fails_when_over_the_ceiling(media, workspace):
+    size = media["clean"].stat().st_size
+    doc = {"operation": "validate", "kind": "delivery", "input": str(media["clean"]), "rules": {"delivery": {"max_size_bytes": size - 1}}}
+    resp = run(doc, workspace)
+    checks = checks_by_id(resp)
+    assert checks["delivery.file_size_within_limit"]["status"] == "FAIL"
+    codes = {f["code"] for f in resp["report"]["findings"]}
+    assert "DELIVERY_FILE_TOO_LARGE" in codes
+
+
+def test_delivery_max_size_passes_when_within_the_ceiling(media, workspace):
+    size = media["clean"].stat().st_size
+    doc = {"operation": "validate", "kind": "delivery", "input": str(media["clean"]), "rules": {"delivery": {"max_size_bytes": size + 1000}}}
+    resp = run(doc, workspace)
+    checks = checks_by_id(resp)
+    assert checks["delivery.file_size_within_limit"]["status"] == "PASS"
+
+
+def test_delivery_min_and_max_size_together_report_both_violations_if_impossible(media, workspace):
+    # A deliberately-contradictory rule (max below min) must surface both
+    # findings on the one check, not silently pick one.
+    doc = {
+        "operation": "validate", "kind": "delivery", "input": str(media["clean"]),
+        "rules": {"delivery": {"min_size_bytes": 10**9, "max_size_bytes": 1}},
+    }
+    resp = run(doc, workspace)
+    checks = checks_by_id(resp)
+    assert checks["delivery.file_size_within_limit"]["status"] == "FAIL"
+    codes = {f["code"] for f in resp["report"]["findings"]}
+    assert "DELIVERY_FILE_TOO_SMALL" in codes
+    assert "DELIVERY_FILE_TOO_LARGE" in codes
+
+
 def test_delivery_missing_subtitle_when_required(media, workspace):
     doc = {"operation": "validate", "kind": "delivery", "input": str(media["clean"]), "rules": {"delivery": {"require_subtitle": True}}}
     resp = run(doc, workspace)

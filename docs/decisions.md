@@ -354,3 +354,59 @@ them out is the honest state, not an oversight (see
 an explicit, enforced set rather than a silent gap). Additive: a new
 top-level `provides` key, saying nothing `checks`/`measurements` don't
 already say, only indexed by Capability id instead of check id.
+
+## ADR-015: closing five measured-but-never-checked gaps (`kajisho5/qc-skill#7`)
+
+A direct `ffmpeg-skill/scripts/check.py` comparison (prompted by
+`kajisho5/AI-video-production-OS#36`, and confirmed a distinct,
+deliberate design per ADR-001/004/005/007 - not a collision) surfaced
+several values qc-skill already measured but never let a caller evaluate.
+Items 1-4 and 6 of that issue were closed as pure `rules.py`/`contract.py`
+additions, each following the exact shape every existing `Rule` field
+already uses (ADR-002/005: caller-supplied, `None` = no opinion, no
+hard-coded threshold):
+
+- **Duration ceiling** - `VideoRule.max_duration_sec`, checked against the
+  already-measured `container.duration_sec` (`video.duration_within_limit`,
+  `VIDEO_DURATION_EXCEEDED`). `UNKNOWN` when duration could not be
+  measured, exactly like every other policy check here.
+- **Delivery size ceiling** - `DeliveryRule.max_size_bytes`, alongside the
+  pre-existing `min_size_bytes` floor. Both now feed the *same*
+  `delivery.file_size_within_limit` check (mirroring how
+  `max_single_black_sec`/`max_total_black_sec` already share one check) -
+  a size that is simultaneously below the floor and above the ceiling
+  (a caller error, but not qc-skill's to reject) surfaces both
+  `DELIVERY_FILE_TOO_SMALL` and `DELIVERY_FILE_TOO_LARGE` rather than
+  picking one.
+- **Colour/HDR** - four new `VideoRule` fields
+  (`expected_color_range`/`color_space`/`color_transfer`/`color_primaries`),
+  each a plain exact-equality check against the measurement of the same
+  name (`video.color_range`, etc. - already measured, per `contract.py`,
+  since before this issue) - the identical mechanism `expected_codec`/
+  `expected_pixel_format` already use. The common case the issue names -
+  "flag HDR delivered to an SDR-only platform" - falls out of this for
+  free: `expected_color_transfer: "bt709"` FAILs against an HDR source
+  (`smpte2084`/PQ or `arib-std-b67`/HLG), with no HDR-specific
+  branching or classifier added.
+- **VFR detection** - a new measurement,
+  `video.variable_frame_rate_suspected`, computed the same way
+  ffmpeg-skill's own `variable_frame_rate_suspected` is:
+  `|r_frame_rate - avg_frame_rate| > 0.01` fps (a *detection* threshold,
+  ADR-005 - it decides what counts as suspicious timing, not whether VFR
+  is acceptable). Unlike ffmpeg-skill, which defaults to `False` when a
+  rate is missing, the measurement is `None` here when either rate
+  couldn't be read - qc-skill never guesses "not VFR" the way it never
+  guesses any other absent fact. `VideoRule.disallow_vfr` (`None` = no
+  opinion) gates the corresponding `video.frame_rate_is_constant` check.
+- **Resolution "at least"** - `VideoRule.min_width`/`min_height`,
+  evaluated by a second, independent check
+  (`video.resolution_meets_minimum`, `VIDEO_RESOLUTION_BELOW_MINIMUM`)
+  alongside - not replacing - the pre-existing exact-equality
+  `video.resolution_matches_expected`. A caller can set either, both, or
+  neither; the two checks never interact.
+
+Item 5 of that issue (embedded/muxed subtitle-stream checks - `probe.py`
+per-track `subtitle_stream_details`, not just standalone SRT/VTT/ASS
+files) was explicitly scoped out: it needs a new probe-style measurement
+path (`measurements/subtitle.py` only ever reads a caption file from
+disk), not a `Rule` field, and is a larger, separate change.

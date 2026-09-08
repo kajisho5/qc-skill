@@ -82,11 +82,19 @@ def _equality_check(
 class VideoRule:
     expected_width: Optional[int] = None
     expected_height: Optional[int] = None
+    min_width: Optional[int] = None
+    min_height: Optional[int] = None
     expected_frame_rate: Optional[float] = None
     frame_rate_tolerance: float = 0.05
     expected_codec: Optional[str] = None
     expected_pixel_format: Optional[str] = None
     expected_aspect_ratio: Optional[str] = None
+    expected_color_range: Optional[str] = None
+    expected_color_space: Optional[str] = None
+    expected_color_transfer: Optional[str] = None
+    expected_color_primaries: Optional[str] = None
+    max_duration_sec: Optional[float] = None
+    disallow_vfr: Optional[bool] = None
     max_single_black_sec: Optional[float] = None
     max_total_black_sec: Optional[float] = None
     max_single_freeze_sec: Optional[float] = None
@@ -143,6 +151,23 @@ def evaluate_video(
             check.finding_codes.append(f.code)
         checks.append(check)
 
+    # --- policy: duration ceiling ---
+    if rule.max_duration_sec is not None:
+        if video_duration_sec is None:
+            checks.append(_unknown_check("video.duration_within_limit", "video", "duration could not be measured", ["container.duration_sec"]))
+        else:
+            status = QCStatus.PASS if video_duration_sec <= rule.max_duration_sec else QCStatus.FAIL
+            check = QCCheck("video.duration_within_limit", "video", status, ["container.duration_sec"])
+            if status == QCStatus.FAIL:
+                f = QCFinding(
+                    "VIDEO_DURATION_EXCEEDED", FindingSeverity.FAIL,
+                    f"duration {video_duration_sec}s exceeds the maximum allowed {rule.max_duration_sec}s",
+                    evidence={"actual": video_duration_sec, "max_allowed": rule.max_duration_sec}, measurement_ids=["container.duration_sec"],
+                )
+                findings.append(f)
+                check.finding_codes.append(f.code)
+            checks.append(check)
+
     # --- policy: resolution ---
     if rule.expected_width is not None or rule.expected_height is not None:
         width, height = _val(measurements, "video.width"), _val(measurements, "video.height")
@@ -166,6 +191,36 @@ def evaluate_video(
                     "VIDEO_RESOLUTION_MISMATCH", FindingSeverity.FAIL,
                     f"resolution {width}x{height} does not match expected {rule.expected_width}x{rule.expected_height}",
                     evidence={"actual": {"width": width, "height": height}, "expected": {"width": rule.expected_width, "height": rule.expected_height}},
+                    measurement_ids=["video.width", "video.height"],
+                )
+                findings.append(f)
+                check.finding_codes.append(f.code)
+            checks.append(check)
+
+    # --- policy: minimum resolution ("at least" form, alongside the
+    # exact-equality check above - e.g. "short side >= 1080, any exact size") ---
+    if rule.min_width is not None or rule.min_height is not None:
+        width, height = _val(measurements, "video.width"), _val(measurements, "video.height")
+        width_unmeasured = rule.min_width is not None and width is None
+        height_unmeasured = rule.min_height is not None and height is None
+        if width_unmeasured or height_unmeasured:
+            checks.append(
+                _unknown_check(
+                    "video.resolution_meets_minimum", "video",
+                    "width/height could not be measured", ["video.width", "video.height"],
+                )
+            )
+        else:
+            ok = (rule.min_width is None or width >= rule.min_width) and (
+                rule.min_height is None or height >= rule.min_height
+            )
+            status = QCStatus.PASS if ok else QCStatus.FAIL
+            check = QCCheck("video.resolution_meets_minimum", "video", status, ["video.width", "video.height"])
+            if not ok:
+                f = QCFinding(
+                    "VIDEO_RESOLUTION_BELOW_MINIMUM", FindingSeverity.FAIL,
+                    f"resolution {width}x{height} is below the minimum {rule.min_width}x{rule.min_height}",
+                    evidence={"actual": {"width": width, "height": height}, "expected": {"min_width": rule.min_width, "min_height": rule.min_height}},
                     measurement_ids=["video.width", "video.height"],
                 )
                 findings.append(f)
@@ -219,6 +274,44 @@ def evaluate_video(
             measurement_id="video.aspect_ratio", actual=aspect, expected=rule.expected_aspect_ratio,
             code="VIDEO_ASPECT_MISMATCH",
             message=f"aspect ratio {aspect!r} does not match expected {rule.expected_aspect_ratio!r}",
+        )
+
+    # --- policy: colour / HDR characteristics (e.g. flag HDR delivered
+    # where an SDR-only expectation is declared: expected_color_transfer="bt709") ---
+    if rule.expected_color_range is not None:
+        color_range = _val(measurements, "video.color_range")
+        _equality_check(
+            checks, findings, check_id="video.color_range_matches_expected", category="video",
+            measurement_id="video.color_range", actual=color_range, expected=rule.expected_color_range,
+            code="VIDEO_COLOR_RANGE_MISMATCH",
+            message=f"color range {color_range!r} does not match expected {rule.expected_color_range!r}",
+        )
+
+    if rule.expected_color_space is not None:
+        color_space = _val(measurements, "video.color_space")
+        _equality_check(
+            checks, findings, check_id="video.color_space_matches_expected", category="video",
+            measurement_id="video.color_space", actual=color_space, expected=rule.expected_color_space,
+            code="VIDEO_COLOR_SPACE_MISMATCH",
+            message=f"color space {color_space!r} does not match expected {rule.expected_color_space!r}",
+        )
+
+    if rule.expected_color_transfer is not None:
+        color_transfer = _val(measurements, "video.color_transfer")
+        _equality_check(
+            checks, findings, check_id="video.color_transfer_matches_expected", category="video",
+            measurement_id="video.color_transfer", actual=color_transfer, expected=rule.expected_color_transfer,
+            code="VIDEO_COLOR_TRANSFER_MISMATCH",
+            message=f"color transfer {color_transfer!r} does not match expected {rule.expected_color_transfer!r}",
+        )
+
+    if rule.expected_color_primaries is not None:
+        color_primaries = _val(measurements, "video.color_primaries")
+        _equality_check(
+            checks, findings, check_id="video.color_primaries_matches_expected", category="video",
+            measurement_id="video.color_primaries", actual=color_primaries, expected=rule.expected_color_primaries,
+            code="VIDEO_COLOR_PRIMARIES_MISMATCH",
+            message=f"color primaries {color_primaries!r} does not match expected {rule.expected_color_primaries!r}",
         )
 
     # --- policy: black frames ---
@@ -306,6 +399,30 @@ def evaluate_video(
             findings.append(f)
             check.finding_codes.append(f.code)
         checks.append(check)
+
+    # --- policy: variable frame rate (mirrors ffmpeg-skill's
+    # variable_frame_rate_suspected: r_frame_rate vs. avg_frame_rate) ---
+    if rule.disallow_vfr:
+        vfr = _val(measurements, "video.variable_frame_rate_suspected")
+        if vfr is None:
+            checks.append(
+                _unknown_check(
+                    "video.frame_rate_is_constant", "video",
+                    "could not determine whether the frame rate is variable", ["video.variable_frame_rate_suspected"],
+                )
+            )
+        else:
+            status = QCStatus.FAIL if vfr else QCStatus.PASS
+            check = QCCheck("video.frame_rate_is_constant", "video", status, ["video.variable_frame_rate_suspected"])
+            if vfr:
+                f = QCFinding(
+                    "VIDEO_VARIABLE_FRAME_RATE", FindingSeverity.FAIL,
+                    "a variable frame rate was detected but disallow_vfr is set",
+                    evidence={"variable_frame_rate_suspected": vfr}, measurement_ids=["video.variable_frame_rate_suspected"],
+                )
+                findings.append(f)
+                check.finding_codes.append(f.code)
+            checks.append(check)
 
     return checks, findings
 
@@ -811,6 +928,7 @@ class DeliveryRule:
     expected_extension: Optional[str] = None
     expected_container: Optional[str] = None
     min_size_bytes: Optional[int] = None
+    max_size_bytes: Optional[int] = None
     require_video: Optional[bool] = None
     require_audio: Optional[bool] = None
     require_subtitle: Optional[bool] = None
@@ -823,15 +941,25 @@ def evaluate_delivery_basics(measurements: MeasurementMap, rule: DeliveryRule) -
     checks: List[QCCheck] = []
     findings: List[QCFinding] = []
 
-    if rule.min_size_bytes is not None:
+    if rule.min_size_bytes is not None or rule.max_size_bytes is not None:
         size = _val(measurements, "container.size_bytes")
-        status = QCStatus.PASS if (size is not None and size >= rule.min_size_bytes) else QCStatus.FAIL
+        too_small = rule.min_size_bytes is not None and not (size is not None and size >= rule.min_size_bytes)
+        too_large = rule.max_size_bytes is not None and not (size is not None and size <= rule.max_size_bytes)
+        status = QCStatus.FAIL if (too_small or too_large) else QCStatus.PASS
         check = QCCheck("delivery.file_size_within_limit", "delivery", status, ["container.size_bytes"])
-        if status == QCStatus.FAIL:
+        if too_small:
             f = QCFinding(
                 "DELIVERY_FILE_TOO_SMALL", FindingSeverity.FAIL,
                 f"file size {size} bytes is below the minimum {rule.min_size_bytes} bytes",
                 evidence={"actual": size, "min_required": rule.min_size_bytes}, measurement_ids=["container.size_bytes"],
+            )
+            findings.append(f)
+            check.finding_codes.append(f.code)
+        if too_large:
+            f = QCFinding(
+                "DELIVERY_FILE_TOO_LARGE", FindingSeverity.FAIL,
+                f"file size {size} bytes exceeds the maximum {rule.max_size_bytes} bytes",
+                evidence={"actual": size, "max_allowed": rule.max_size_bytes}, measurement_ids=["container.size_bytes"],
             )
             findings.append(f)
             check.finding_codes.append(f.code)
