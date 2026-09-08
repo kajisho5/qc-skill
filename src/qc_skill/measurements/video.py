@@ -143,8 +143,27 @@ def measure_video_streams(probe_data: Dict[str, Any]) -> List[QCMeasurement]:
         QCMeasurement("video.aspect_ratio", "video", "aspect_ratio", aspect_value, stream=idx, source=aspect_source, estimated=estimated)
     )
 
-    fps = parse_frame_rate(stream.get("avg_frame_rate")) or parse_frame_rate(stream.get("r_frame_rate"))
+    avg_fps = parse_frame_rate(stream.get("avg_frame_rate"))
+    r_fps = parse_frame_rate(stream.get("r_frame_rate"))
+    fps = avg_fps or r_fps
     measurements.append(QCMeasurement("video.frame_rate", "video", "frame_rate", fps, unit="fps", stream=idx, source="ffprobe"))
+
+    # Mirrors ffmpeg-skill's variable_frame_rate_suspected heuristic: a
+    # container's declared r_frame_rate (the least-common-multiple rate the
+    # timebase could represent) diverging from its avg_frame_rate (frame
+    # count / duration) suggests inter-frame timing isn't actually constant.
+    # None (not False) when either rate could not be measured - never a
+    # guessed "not VFR".
+    vfr_suspected = None
+    if r_fps is not None and avg_fps is not None:
+        vfr_suspected = abs(r_fps - avg_fps) > 0.01
+    measurements.append(
+        QCMeasurement(
+            "video.variable_frame_rate_suspected", "video", "variable_frame_rate_suspected", vfr_suspected,
+            stream=idx, source="ffprobe:derived",
+            notes="derived from |r_frame_rate - avg_frame_rate| > 0.01fps; null when either rate is unavailable",
+        )
+    )
 
     nb_frames = stream.get("nb_frames")
     if nb_frames is not None:

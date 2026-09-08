@@ -26,6 +26,7 @@ with its category and default severity.
 | `video.codec`, `video.width`, `video.height`, `video.pixel_format` | ffprobe | |
 | `video.aspect_ratio` | ffprobe (or derived from width/height, `estimated: true`) | |
 | `video.frame_rate` | ffprobe | |
+| `video.variable_frame_rate_suspected` | ffprobe:derived | `true` when `\|r_frame_rate - avg_frame_rate\| > 0.01` fps (mirrors ffmpeg-skill's own `variable_frame_rate_suspected` heuristic); `null` when either rate is unavailable - never guessed |
 | `video.frame_count` | ffprobe `nb_frames`, or derived from `duration * frame_rate` (`estimated: true`) when absent | |
 | `video.color_range`, `video.color_space`, `video.color_transfer`, `video.color_primaries`, `video.field_order` | ffprobe | `null` when the container doesn't carry it - never guessed |
 | `video.black_segments` | ffmpeg `blackdetect` | `[{start, end, duration}]` |
@@ -44,14 +45,34 @@ with its category and default severity.
 
 | check_id | rule field(s) | finding |
 |---|---|---|
+| `video.duration_within_limit` | `max_duration_sec` | `VIDEO_DURATION_EXCEEDED` |
 | `video.resolution_matches_expected` | `expected_width`, `expected_height` | `VIDEO_RESOLUTION_MISMATCH` |
+| `video.resolution_meets_minimum` | `min_width`, `min_height` (an "at least" form alongside the exact-equality check above, e.g. "short side >= 1080, any exact size") | `VIDEO_RESOLUTION_BELOW_MINIMUM` |
 | `video.frame_rate_matches_expected` | `expected_frame_rate`, `frame_rate_tolerance` | `VIDEO_FPS_MISMATCH` |
+| `video.frame_rate_is_constant` | `disallow_vfr` | `VIDEO_VARIABLE_FRAME_RATE` |
 | `video.codec_matches_expected` | `expected_codec` | `VIDEO_CODEC_MISMATCH` |
 | `video.pixel_format_matches_expected` | `expected_pixel_format` | `VIDEO_PIXEL_FORMAT_MISMATCH` |
 | `video.aspect_ratio_matches_expected` | `expected_aspect_ratio` | `VIDEO_ASPECT_MISMATCH` |
+| `video.color_range_matches_expected` | `expected_color_range` | `VIDEO_COLOR_RANGE_MISMATCH` |
+| `video.color_space_matches_expected` | `expected_color_space` | `VIDEO_COLOR_SPACE_MISMATCH` |
+| `video.color_transfer_matches_expected` | `expected_color_transfer` | `VIDEO_COLOR_TRANSFER_MISMATCH` |
+| `video.color_primaries_matches_expected` | `expected_color_primaries` | `VIDEO_COLOR_PRIMARIES_MISMATCH` |
 | `video.black_frames_within_tolerance` | `max_single_black_sec`, `max_total_black_sec` | `VIDEO_BLACK_FRAMES_EXCEEDED` |
 | `video.freeze_frames_within_tolerance` | `max_single_freeze_sec`, `max_total_freeze_sec` | `VIDEO_FREEZE_EXCEEDED` (or `UNKNOWN` if an unresolved freeze-to-EOF segment exists and no violation was found from the resolvable segments) |
 | `video.luminance_within_legal_range` | `max_single_luminance_excursion_sec`, `max_total_luminance_excursion_sec` | `VIDEO_LUMINANCE_OUT_OF_RANGE` |
+
+The color/HDR checks are plain exact-equality comparisons against
+`video.color_range`/`color_space`/`color_transfer`/`color_primaries` -
+the same mechanism as `expected_codec`/`expected_pixel_format`. A common
+use is flagging HDR delivered to an SDR-only platform: setting
+`expected_color_transfer: "bt709"` FAILs against an HDR source (whose
+transfer is `smpte2084`/PQ or `arib-std-b67`/HLG).
+
+`video.frame_rate_is_constant` mirrors ffmpeg-skill's own
+`variable_frame_rate_suspected` heuristic (`video.variable_frame_rate_suspected`
+above); it only runs when `disallow_vfr` is set, and is `UNKNOWN` (never
+a guessed PASS/FAIL) when the underlying rates could not both be
+measured.
 
 `luminance_legal_min`/`luminance_legal_max` (default 16/235, the
 near-universal legal range for 8-bit limited-range video) are *detection*
@@ -177,7 +198,7 @@ nested `video`/`audio`/`subtitle` rule) with delivery-specific checks:
 
 | check_id | rule field(s) | finding |
 |---|---|---|
-| `delivery.file_size_within_limit` | `min_size_bytes` | `DELIVERY_FILE_TOO_SMALL` |
+| `delivery.file_size_within_limit` | `min_size_bytes`, `max_size_bytes` | `DELIVERY_FILE_TOO_SMALL` / `DELIVERY_FILE_TOO_LARGE` |
 | `delivery.extension_matches_expected` | `expected_extension` | `DELIVERY_EXTENSION_MISMATCH` |
 | `delivery.container_matches_expected` | `expected_container` | `DELIVERY_CONTAINER_MISMATCH` |
 

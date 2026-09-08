@@ -1,4 +1,24 @@
+from qc_skill.measurements.video import measure_video_streams
 from tests.helpers import checks_by_id, measurements_by_id, run
+
+
+def _video_probe(*, r_frame_rate, avg_frame_rate):
+    return {"streams": [{"codec_type": "video", "index": 0, "width": 320, "height": 240, "r_frame_rate": r_frame_rate, "avg_frame_rate": avg_frame_rate}]}
+
+
+def test_variable_frame_rate_suspected_when_r_and_avg_rate_diverge():
+    m = {x.id: x for x in measure_video_streams(_video_probe(r_frame_rate="30/1", avg_frame_rate="24/1"))}
+    assert m["video.variable_frame_rate_suspected"].value is True
+
+
+def test_variable_frame_rate_not_suspected_when_r_and_avg_rate_agree():
+    m = {x.id: x for x in measure_video_streams(_video_probe(r_frame_rate="25/1", avg_frame_rate="25/1"))}
+    assert m["video.variable_frame_rate_suspected"].value is False
+
+
+def test_variable_frame_rate_suspected_is_none_when_a_rate_is_unavailable():
+    m = {x.id: x for x in measure_video_streams(_video_probe(r_frame_rate="25/1", avg_frame_rate="0/0"))}
+    assert m["video.variable_frame_rate_suspected"].value is None
 
 
 def test_inspect_clean_video_has_no_checks(media, workspace):
@@ -134,6 +154,105 @@ def test_unknown_status_is_not_conflated_with_pass_when_no_video_stream(media, w
     checks = checks_by_id(resp)
     assert checks["video.stream_present"]["status"] == "FAIL"
     assert resp["report"]["overall_status"] == "FAIL"
+
+
+def test_duration_ceiling_check_fails_when_exceeded(media, workspace):
+    # clean.mp4 is 4s (see tests/fixtures/generate.py).
+    doc = {
+        "operation": "check", "kind": "video", "input": str(media["clean"]),
+        "rules": {"video": {"max_duration_sec": 2.0}},
+    }
+    resp = run(doc, workspace)
+    checks = checks_by_id(resp)
+    assert checks["video.duration_within_limit"]["status"] == "FAIL"
+    codes = {f["code"] for f in resp["report"]["findings"]}
+    assert "VIDEO_DURATION_EXCEEDED" in codes
+    assert resp["report"]["overall_status"] == "FAIL"
+
+
+def test_duration_ceiling_check_passes_when_within_limit(media, workspace):
+    doc = {
+        "operation": "check", "kind": "video", "input": str(media["clean"]),
+        "rules": {"video": {"max_duration_sec": 10.0}},
+    }
+    resp = run(doc, workspace)
+    checks = checks_by_id(resp)
+    assert checks["video.duration_within_limit"]["status"] == "PASS"
+    assert resp["report"]["overall_status"] == "PASS"
+
+
+def test_resolution_meets_minimum_passes_when_at_or_above_floor(media, workspace):
+    # clean.mp4 is 320x240.
+    doc = {
+        "operation": "check", "kind": "video", "input": str(media["clean"]),
+        "rules": {"video": {"min_width": 320, "min_height": 240}},
+    }
+    resp = run(doc, workspace)
+    checks = checks_by_id(resp)
+    assert checks["video.resolution_meets_minimum"]["status"] == "PASS"
+    assert resp["report"]["overall_status"] == "PASS"
+
+
+def test_resolution_meets_minimum_fails_when_below_floor(media, workspace):
+    doc = {
+        "operation": "check", "kind": "video", "input": str(media["clean"]),
+        "rules": {"video": {"min_width": 1920, "min_height": 1080}},
+    }
+    resp = run(doc, workspace)
+    checks = checks_by_id(resp)
+    assert checks["video.resolution_meets_minimum"]["status"] == "FAIL"
+    codes = {f["code"] for f in resp["report"]["findings"]}
+    assert "VIDEO_RESOLUTION_BELOW_MINIMUM" in codes
+    assert resp["report"]["overall_status"] == "FAIL"
+
+
+def test_resolution_meets_minimum_is_independent_of_exact_equality_check(media, workspace):
+    # A caller may ask for "at least 320x240" without pinning an exact size -
+    # resolution_matches_expected must not be produced when only min_* is set.
+    doc = {
+        "operation": "check", "kind": "video", "input": str(media["clean"]),
+        "rules": {"video": {"min_width": 100, "min_height": 100}},
+    }
+    resp = run(doc, workspace)
+    checks = checks_by_id(resp)
+    assert "video.resolution_matches_expected" not in checks
+    assert checks["video.resolution_meets_minimum"]["status"] == "PASS"
+
+
+def test_constant_frame_rate_fixture_is_not_flagged_as_vfr(media, workspace):
+    doc = {"operation": "inspect", "kind": "video", "input": str(media["clean"])}
+    resp = run(doc, workspace)
+    m = measurements_by_id(resp)["video.variable_frame_rate_suspected"]
+    assert m["value"] is False
+
+
+def test_disallow_vfr_passes_for_a_constant_frame_rate_fixture(media, workspace):
+    doc = {
+        "operation": "check", "kind": "video", "input": str(media["clean"]),
+        "rules": {"video": {"disallow_vfr": True}},
+    }
+    resp = run(doc, workspace)
+    checks = checks_by_id(resp)
+    assert checks["video.frame_rate_is_constant"]["status"] == "PASS"
+    assert resp["report"]["overall_status"] == "PASS"
+
+
+def test_color_transfer_check_is_unknown_when_the_container_carries_no_tag(media, workspace):
+    # clean.mp4's raw testsrc2 source carries no color_transfer tag at all
+    # (ffprobe reports null) - a real gap real media can hit, exercised
+    # end-to-end here; the actual mismatch/match paths (real values on both
+    # sides) are exercised directly against evaluate_video in
+    # test_rules_unknown_guards.py, since a synthetic tagged fixture isn't
+    # needed to prove that logic.
+    doc = {
+        "operation": "check", "kind": "video", "input": str(media["clean"]),
+        "rules": {"video": {"expected_color_transfer": "bt709"}},
+    }
+    resp = run(doc, workspace)
+    checks = checks_by_id(resp)
+    assert checks["video.color_transfer_matches_expected"]["status"] == "UNKNOWN"
+    codes = {f["code"] for f in resp["report"]["findings"]}
+    assert "VIDEO_COLOR_TRANSFER_MISMATCH" not in codes
 
 
 def test_container_size_bytes_matches_the_actual_file_size(media, workspace):
