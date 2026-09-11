@@ -54,10 +54,12 @@ categories:
       - 'dependencies'
 
 autolabeler:
-  - label: 'major'
-    title:
-      - '/^(\w+)(\(.+\))?!:/'
-      - '/breaking change/i'
+  # Deliberately no text-pattern rule for 'major'/'breaking': a title or
+  # body that merely contains "!:" or "BREAKING CHANGE" is not
+  # sufficient evidence that a merge should trigger a major version
+  # bump (e.g. a PR whose body mentions "BREAKING CHANGE" while
+  # describing a bug it fixes, not introducing one). Those two labels
+  # are applied by a human, deliberately, never inferred from text.
   - label: 'feature'
     title:
       - '/^feat(\(.+\))?:/'
