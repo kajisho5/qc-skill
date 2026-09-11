@@ -20,6 +20,11 @@ concurrency:
 jobs:
   release:
     runs-on: ubuntu-latest
+    # `secrets` is not a valid context in `if:` conditions - route the
+    # token presence check through `env` (readable from step `if:`s)
+    # instead of referencing `secrets.PYPI_API_TOKEN` there directly.
+    env:
+      PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -131,11 +136,11 @@ jobs:
           python -m build
 
       - name: Publish to PyPI
-        if: steps.decide.outputs.needs_release == 'true' && secrets.PYPI_API_TOKEN != ''
+        if: steps.decide.outputs.needs_release == 'true' && env.PYPI_API_TOKEN != ''
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
-          password: ${{ secrets.PYPI_API_TOKEN }}
+          password: ${{ env.PYPI_API_TOKEN }}
 
       - name: Note that publish was skipped
-        if: steps.decide.outputs.needs_release == 'true' && secrets.PYPI_API_TOKEN == ''
+        if: steps.decide.outputs.needs_release == 'true' && env.PYPI_API_TOKEN == ''
         run: echo "::notice::PYPI_API_TOKEN is not set - skipping PyPI publish. Tag and GitHub Release were still created."
