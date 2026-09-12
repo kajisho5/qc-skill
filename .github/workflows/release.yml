@@ -1,0 +1,146 @@
+name: Release
+
+# Single job, triggered only by `push` to main - deliberately NOT split into
+# a tag-triggered second workflow. Tags/commits pushed here use the default
+# GITHUB_TOKEN, and GitHub Actions does not trigger further workflow runs
+# from GITHUB_TOKEN-authored pushes (the standard anti-recursion rule) - a
+# tag-push-triggered second workflow would simply never fire.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    # `secrets` is not a valid context in `if:` conditions - route the
+    # token presence check through `env` (readable from step `if:`s)
+    # instead of referencing `secrets.PYPI_API_TOKEN` there directly.
+    env:
+      PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Read current pyproject.toml version
+        id: current
+        run: echo "version=$(python -m scripts.release_version get)" >> "$GITHUB_OUTPUT"
+
+      - name: Determine latest release tag
+        id: latest_tag
+        run: |
+          tag="$(git tag --list 'v[0-9]*' --sort=-v:refname | head -n1)"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Decide whether an auto-bump is needed
+        id: auto_bump
+        env:
+          CURRENT_VERSION: ${{ steps.current.outputs.version }}
+          LATEST_TAG: ${{ steps.latest_tag.outputs.tag }}
+        run: |
+          latest_version="${LATEST_TAG#v}"
+          if [ -n "$LATEST_TAG" ] && [ "$CURRENT_VERSION" = "$latest_version" ]; then
+            echo "needed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Only asked to resolve a version when pyproject.toml hasn't already
+      # been bumped by hand since the last tag - see release_decide.py's
+      # docstring for the full rule. `publish: false` means this never
+      # creates a GitHub Release itself; we only read resolved_version.
+      - name: Resolve next version from merged PR labels (dry run)
+        id: drafter
+        if: steps.auto_bump.outputs.needed == 'true'
+        uses: release-drafter/release-drafter@v6
+        with:
+          config-name: release-drafter.yml
+          publish: false
+          disable-releaser: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Decide the release
+        id: decide
+        env:
+          RESOLVED_VERSION: ${{ steps.drafter.outputs.resolved_version }}
+        run: |
+          if [ -n "$RESOLVED_VERSION" ]; then
+            python -m scripts.release_decide --resolved-version "$RESOLVED_VERSION" --github-output "$GITHUB_OUTPUT"
+          else
+            python -m scripts.release_decide --github-output "$GITHUB_OUTPUT"
+          fi
+
+      - name: Write the resolved version to pyproject.toml
+        if: steps.decide.outputs.needs_release == 'true' && steps.decide.outputs.needs_pyproject_bump == 'true'
+        env:
+          NEW_VERSION: ${{ steps.decide.outputs.new_version }}
+        run: python -m scripts.release_version set "$NEW_VERSION"
+
+      - name: Generate CHANGELOG.md entry
+        if: steps.decide.outputs.needs_release == 'true'
+        env:
+          NEW_VERSION: ${{ steps.decide.outputs.new_version }}
+          LATEST_TAG: ${{ steps.latest_tag.outputs.tag }}
+        run: |
+          args=(--version "$NEW_VERSION" --date "$(date -u +%Y-%m-%d)" --notes-out release_notes.md)
+          if [ -n "$LATEST_TAG" ]; then
+            args+=(--since "$LATEST_TAG")
+          fi
+          python -m scripts.release_changelog "${args[@]}"
+
+      - name: Commit version bump and changelog
+        if: steps.decide.outputs.needs_release == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add pyproject.toml CHANGELOG.md
+          if ! git diff --cached --quiet; then
+            git commit -m "chore(release): ${{ steps.decide.outputs.tag }}"
+          fi
+
+      - name: Tag and push
+        if: steps.decide.outputs.needs_release == 'true'
+        env:
+          RELEASE_TAG: ${{ steps.decide.outputs.tag }}
+        run: |
+          git tag "$RELEASE_TAG"
+          git push origin HEAD:main
+          git push origin "$RELEASE_TAG"
+
+      - name: Create GitHub Release
+        if: steps.decide.outputs.needs_release == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ steps.decide.outputs.tag }}
+        run: gh release create "$RELEASE_TAG" --title "$RELEASE_TAG" --notes-file release_notes.md
+
+      - name: Build distribution
+        if: steps.decide.outputs.needs_release == 'true'
+        run: |
+          python -m pip install --upgrade build
+          python -m build
+
+      - name: Publish to PyPI
+        if: steps.decide.outputs.needs_release == 'true' && env.PYPI_API_TOKEN != ''
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ env.PYPI_API_TOKEN }}
+
+      - name: Note that publish was skipped
+        if: steps.decide.outputs.needs_release == 'true' && env.PYPI_API_TOKEN == ''
+        run: echo "::notice::PYPI_API_TOKEN is not set - skipping PyPI publish. Tag and GitHub Release were still created."

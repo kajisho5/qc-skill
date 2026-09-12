@@ -1,0 +1,92 @@
+# Shared config for both:
+#  - .github/workflows/pr-labeler.yml (autolabeler: adds a label to each PR)
+#  - .github/workflows/release.yml    (dry-run version-resolver: decides
+#    the next semver bump from the labels on PRs merged since the last tag)
+#
+# Release notes / GitHub Release body generation from this config is NOT
+# used - release.yml builds its own CHANGELOG.md and release notes from
+# `git log` directly (see scripts/release_changelog.py) to avoid passing
+# PR titles through a `${{ }}`-interpolated shell block. Only the
+# autolabeler and the version-resolver features of release-drafter are
+# used here.
+
+name-template: 'v$RESOLVED_VERSION'
+tag-template: 'v$RESOLVED_VERSION'
+
+version-resolver:
+  major:
+    labels:
+      - 'major'
+      - 'breaking'
+  minor:
+    labels:
+      - 'minor'
+      - 'feature'
+  patch:
+    labels:
+      - 'patch'
+      - 'fix'
+      - 'chore'
+      - 'documentation'
+      - 'dependencies'
+  default: patch
+
+categories:
+  - title: '💥 Breaking Changes'
+    labels:
+      - 'major'
+      - 'breaking'
+  - title: '🚀 Features'
+    labels:
+      - 'feature'
+      - 'minor'
+  - title: '🐛 Bug Fixes'
+    labels:
+      - 'fix'
+  - title: '📚 Documentation'
+    labels:
+      - 'documentation'
+  - title: '🧰 Maintenance'
+    labels:
+      - 'chore'
+  - title: '⬆️ Dependencies'
+    labels:
+      - 'dependencies'
+
+autolabeler:
+  # Deliberately no text-pattern rule for 'major'/'breaking': a title or
+  # body that merely contains "!:" or "BREAKING CHANGE" is not
+  # sufficient evidence that a merge should trigger a major version
+  # bump (e.g. a PR whose body mentions "BREAKING CHANGE" while
+  # describing a bug it fixes, not introducing one). Those two labels
+  # are applied by a human, deliberately, never inferred from text.
+  - label: 'feature'
+    title:
+      - '/^feat(\(.+\))?:/'
+  - label: 'fix'
+    title:
+      - '/^fix(\(.+\))?:/'
+  - label: 'documentation'
+    title:
+      - '/^docs(\(.+\))?:/'
+    files:
+      - '*.md'
+      - 'docs/**/*'
+  - label: 'chore'
+    title:
+      - '/^chore(\(.+\))?:/'
+      - '/^ci(\(.+\))?:/'
+      - '/^test(\(.+\))?:/'
+      - '/^refactor(\(.+\))?:/'
+  - label: 'dependencies'
+    title:
+      - '/^(chore|fix)\(deps\):/'
+    files:
+      - '**/requirements*.txt'
+      - '**/package.json'
+      - '**/package-lock.json'
+      - 'pyproject.toml'
+
+template: |
+  ## Changes
+  $CHANGES
