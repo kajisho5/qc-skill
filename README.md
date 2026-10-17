@@ -1,4 +1,31 @@
-# qc-skill
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="brand/app-icon-dark.png">
+    <img src="brand/app-icon.png" width="128" alt="qc-skill app icon">
+  </picture>
+</p>
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="brand/logo/qc-skill-wordmark-white.svg">
+    <img src="brand/logo/qc-skill-wordmark-black.svg" height="48" alt="qc-skill">
+  </picture>
+</p>
+
+<p align="center"><b>Deterministic media quality control / validation.</b><br>
+Measures and checks video, audio, subtitle, and delivery artifacts and reports structured PASS / WARN / FAIL / UNKNOWN results with the evidence behind each one. Not an AI agent: never decides, never edits.</p>
+
+<p align="center">
+  <a href="#cli-usage"><b>CLI usage</b></a> ·
+  <a href="#what-it-returns">What it returns</a> ·
+  <a href="#kinds-measurements-checks">Kinds and checks</a> ·
+  <a href="docs/architecture.md">Architecture</a> ·
+  <a href="#documentation">Documentation</a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/kajisho5/qc-skill/actions/workflows/ci.yml"><img src="https://github.com/kajisho5/qc-skill/actions/workflows/ci.yml/badge.svg" alt="tests"></a>
+</p>
 
 Deterministic media quality control / validation. `qc-skill` measures and
 checks video, audio, subtitle, and delivery artifacts - a single file, or
