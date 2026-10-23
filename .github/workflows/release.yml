@@ -66,11 +66,13 @@ jobs:
       - name: Resolve next version from merged PR labels (dry run)
         id: drafter
         if: steps.auto_bump.outputs.needed == 'true'
-        uses: release-drafter/release-drafter@v6
+        # v7's dry-run resolves the version without writing a draft. The v6 step this replaces ran
+        # with `disable-releaser: true`, which skips the drafting that computes resolved_version,
+        # so the output was always empty and every push to main failed in "Decide the release".
+        uses: release-drafter/release-drafter@v7
         with:
           config-name: release-drafter.yml
-          publish: false
-          disable-releaser: true
+          dry-run: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

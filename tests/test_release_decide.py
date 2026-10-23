@@ -123,3 +123,20 @@ def test_tag_exists_true_and_false(tmp_path):
     assert tag_exists("v0.1.0", git_dir=tmp_path) is False
     subprocess.run(["git", "tag", "v0.1.0"], cwd=tmp_path, check=True)
     assert tag_exists("v0.1.0", git_dir=tmp_path) is True
+
+
+def test_nothing_to_release_is_a_no_op_not_a_failure(tmp_path, monkeypatch):
+    # The version still matches the latest tag and the label resolver produced nothing (only
+    # CI/chore PRs merged): main() reports needs_release=false and exits 0. It used to raise,
+    # which failed every push to main from 2026-10-17 on.
+    from scripts import release_decide
+
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "x"],
+                   cwd=tmp_path, check=True)
+    subprocess.run(["git", "tag", "v1.0.0"], cwd=tmp_path, check=True)
+    (tmp_path / "pyproject.toml").write_text('[project]\nname = "x"\nversion = "1.0.0"\n', encoding="utf-8")
+    out = tmp_path / "out.txt"
+    monkeypatch.chdir(tmp_path)
+    assert release_decide.main(["--pyproject", str(tmp_path / "pyproject.toml"), "--github-output", str(out)]) == 0
+    assert "needs_release=false" in out.read_text(encoding="utf-8")
