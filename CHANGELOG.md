@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.1.1 - 2026-10-23
+
+- ci(release): resolve the version with release-drafter v7 dry-run; nothing to release is a no-op (#17) (ae2c9b9)
+- ci: bump GitHub Actions (checkout v7, setup-python v7, codeql v4 and others) (#16) (af1901c)
+- docs(readme): fresnel-style header with a Liquid Glass app icon (#15) (56f8a94)
+
 ## v0.1.0 - 2026-09-12
 
 - Add GitHub automation: release, PR labeling, Dependabot, CodeQL, security policy (#9) (b5097d9)
