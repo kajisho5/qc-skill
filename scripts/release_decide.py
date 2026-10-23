@@ -74,6 +74,15 @@ def main(argv=None) -> int:
 
     current = read_version(args.pyproject)
     latest_tag = latest_tag_version()
+    if latest_tag is not None and current == latest_tag and not args.resolved_version:
+        # nothing merged since the last tag resolves to a version (CI-only or chore PRs): no
+        # release, and the run says so instead of failing
+        lines = [f"new_version={current}", f"tag=v{current}", "needs_pyproject_bump=false", "needs_release=false"]
+        print("\n".join(lines) + "\nnothing to release: no merged PR since v" + current + " resolves to a version")
+        if args.github_output is not None:
+            with open(args.github_output, "a", encoding="utf-8") as fh:
+                fh.write("\n".join(lines) + "\n")
+        return 0
     decision = decide_release(current, latest_tag, args.resolved_version)
     tag = f"v{decision.new_version}"
     already_released = tag_exists(tag)
