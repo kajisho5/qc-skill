@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.1.3 - 2026-10-25
+
+- Add MIT LICENSE (adf6cfa)
+
 ## v0.1.2 - 2026-10-25
 
 - Add the Sponsor badge and .github/FUNDING.yml (#18) (92b5a44)
