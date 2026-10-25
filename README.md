@@ -25,6 +25,7 @@ Measures and checks video, audio, subtitle, and delivery artifacts and reports s
 
 <p align="center">
   <a href="https://github.com/kajisho5/qc-skill/actions/workflows/ci.yml"><img src="https://github.com/kajisho5/qc-skill/actions/workflows/ci.yml/badge.svg" alt="tests"></a>
+  <a href="https://github.com/sponsors/kajisho5"><img src="https://img.shields.io/badge/sponsor-%E2%9D%A4-ea4aaa?logo=githubsponsors" alt="Sponsor"></a>
 </p>
 
 Deterministic media quality control / validation. `qc-skill` measures and
