@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.2.2 - 2026-10-30
+
+- Report the pyproject.toml version everywhere instead of a stale 0.1.0 constant (#22) (4499f6d)
+
 ## v0.2.1 - 2026-10-30
 
 - Enforce request.timeout: kill the process group, fail with TIMEOUT (#21) (dd00cf1)
