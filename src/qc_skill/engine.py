@@ -37,6 +37,7 @@ from .rules import (
     evaluate_subtitle,
     evaluate_video,
 )
+from .runner import check_deadline, request_deadline
 from .schemas import Request
 from .security import PathPolicy
 
@@ -322,7 +323,21 @@ def _rules_payload(request: Request) -> Dict[str, Any]:
 def run_report(request: Request, ctx: ExecutionContext) -> Dict[str, Any]:
     """Build a QCReport for one request. Returns the full response payload
     (STEP 18): {status, skill, skill_version, report, provenance, reused, cache}.
+
+    ``request.timeout`` bounds the whole call (ADR-019): it is checked on
+    entry, bounds every ffprobe/ffmpeg child (whose process group is
+    killed when it runs out), and is checked once more before the response
+    is returned. Running out raises ``TIMEOUT``.
     """
+
+    with request_deadline(request.timeout):
+        check_deadline("start")
+        response = _run_report(request, ctx)
+        check_deadline("report")
+    return response
+
+
+def _run_report(request: Request, ctx: ExecutionContext) -> Dict[str, Any]:
 
     if not ctx.capabilities.ffprobe_available:
         raise error("DEPENDENCY_ERROR", "ffprobe is required but was not found on PATH")

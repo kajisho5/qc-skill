@@ -26,7 +26,7 @@ qc run <request.json | -> --json [--workspace DIR] [--allowed-input-root DIR]...
 | `parameters` | object, optional | detection sensitivity overrides (e.g. `silence_threshold_db`) |
 | `rules` | object, optional | typed expectations: `{video, audio, subtitle, delivery, delivery_package}` (see `src/qc_skill/rules.py`) |
 | `cache_policy` | `use` \| `bypass` \| `only` | default `use` |
-| `timeout` | number, optional | seconds |
+| `timeout` | number, optional | seconds of wall clock for the whole request; when it runs out every running ffprobe/ffmpeg is killed with its process group and the call fails with `TIMEOUT` (exit 15, retryable) - ADR-019 |
 
 Never send `command`, `argv`, `args`, `shell`, `cmd`, `exec`, `executable`,
 `filter`, `filter_complex`, or `env` - the request schema rejects all of

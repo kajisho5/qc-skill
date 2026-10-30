@@ -558,3 +558,41 @@ None of the three new checks joins a `provides` Capability group:
 accuracy or text legibility (`measure.video.scene_detection` is
 media-analysis-skill's raw detector, a different capability), so they
 are listed in `contract.UNGROUPED_CHECKS` like the ADR-014 precedent.
+
+## ADR-019: `request.timeout` is one wall-clock budget for the whole request; running out kills the child's process group and fails with `TIMEOUT`
+
+`request.timeout` was parsed and validated but never used: the only
+limits were the fixed per-invocation ceilings in `probe.py` and
+`measurements/*` (60/120 s, `TOOL_ERROR` when they run out), so a caller
+could not bound a request, and a caller that killed `qc` itself left any
+running ffmpeg/ffprobe behind.
+
+- **One budget, not one per child.** `runner.request_deadline(timeout)`
+  starts the clock (the CLI opens it before capability detection;
+  `run_report` opens it again for library callers - a nested budget never
+  extends the enclosing one). It is checked when `run_report` starts,
+  before every child is launched, and once more before the response is
+  returned. Every child gets `min(its own ceiling, time left)`.
+- **Killing.** Children already run in their own process group
+  (`start_new_session=True` on POSIX, `CREATE_NEW_PROCESS_GROUP` on
+  Windows). When the budget runs out mid-child, the whole group is killed
+  - `os.killpg(pid, SIGKILL)` on POSIX, `taskkill /T /F /PID` (from
+  `%SYSTEMROOT%\System32`) on Windows, which walks the process tree -
+  followed by a direct `kill()` of the child, and the child is reaped
+  before `TIMEOUT` is raised, so nothing qc started outlives the call.
+  SIGKILL, not SIGTERM first: ffmpeg/ffprobe here only read and write to
+  `-f null` or a pipe, so there is no partial output to flush. Same
+  pattern as hyperframes-skill `lib/proc.mjs` and transcription-skill
+  ADR-003.
+- **Error.** A new code `TIMEOUT`, exit code 15, `retryable: true`, in
+  the existing `qc/response@1` failure envelope; `details` carries
+  `timeout` (the budget), `stage` (the executable or check point that ran
+  out) and, when a child was killed, its `seconds`. A per-invocation
+  ceiling that runs out first is still `TOOL_ERROR` - that is the tool
+  hanging, not the caller's budget. `CANCELLED` stays reserved for an
+  outside cancellation.
+- **What is not undone.** A report that finished computing after the
+  budget ran out is still written to the cache (it is a correct report,
+  and a retry then returns it at once), but the response is `TIMEOUT`.
+  `timeout` is not part of the report identity: it changes whether a
+  report is returned, never what it says.

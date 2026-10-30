@@ -28,6 +28,7 @@ ERROR_CODES = {
     "TOOL_ERROR": (12, True),
     "CANCELLED": (13, True),
     "INTERNAL_ERROR": (14, False),
+    "TIMEOUT": (15, True),  # request.timeout elapsed; children killed (ADR-019)
 }
 
 

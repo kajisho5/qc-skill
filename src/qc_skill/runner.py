@@ -9,20 +9,28 @@ Security boundary (see docs/security.md and STEP 15 of the task spec):
     single resolved, validated input path.
   * The child runs in a minimal, explicit environment (no inherited
     secrets) and as the leader of its own process group so a timeout can
-    kill the whole tree, not just the direct child.
+    kill the whole tree, not just the direct child (POSIX: a new session,
+    ``os.killpg``; Windows: a new process group, ``taskkill /T /F``).
+  * ``request.timeout`` is one wall-clock budget for the whole request
+    (ADR-019): ``request_deadline`` sets it, every child gets at most the
+    time that is left, and running out raises ``TIMEOUT`` after the
+    child's process group has been killed.
   * ``-protocol_whitelist file`` is always set so an input path can never
     be reinterpreted as a network/pipe/concat source by ffmpeg/ffprobe.
 """
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import os
 import platform
+import signal
 import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import Iterator, List, Optional
 
 from .errors import error
 
@@ -59,18 +67,80 @@ def _group_kwargs() -> dict:
     return {"start_new_session": True}
 
 
+def _taskkill() -> str:
+    system_root = os.environ.get("SYSTEMROOT")
+    if system_root:
+        candidate = os.path.join(system_root, "System32", "taskkill.exe")
+        if os.path.isfile(candidate):
+            return candidate
+    return "taskkill"
+
+
 def _kill_group(proc: subprocess.Popen) -> None:
-    try:
-        if platform.system() == "Windows":
+    """Kill the child and everything it started. Never raises: the child
+    may already have exited by the time this runs."""
+
+    if platform.system() == "Windows":
+        try:
             subprocess.run(
-                ["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+                [_taskkill(), "/T", "/F", "/PID", str(proc.pid)],
                 capture_output=True,
                 timeout=10,
             )
-        else:
-            os.killpg(proc.pid, 9)
+        except Exception:
+            pass
+    else:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except Exception:
+            pass
+    try:
+        proc.kill()  # the direct child, in case the group kill did not reach it
     except Exception:
         pass
+
+
+# --- request.timeout (ADR-019) ---------------------------------------------
+
+# (deadline on time.monotonic(), budget in seconds) for the request being
+# run in this context, or None when the request set no timeout.
+_DEADLINE: "contextvars.ContextVar[Optional[tuple]]" = contextvars.ContextVar("qc_request_deadline", default=None)
+
+
+@contextlib.contextmanager
+def request_deadline(seconds: Optional[float]) -> Iterator[None]:
+    """Run the enclosed block under one wall-clock budget of ``seconds``
+    (``None``: no budget). Every ``run_argv`` call inside it is bounded by
+    the time left; see ``check_deadline`` for the checks between children.
+    Nested budgets never extend an enclosing one: the earlier deadline wins
+    (the CLI opens one around capability detection, ``run_report`` opens
+    another with the same budget)."""
+
+    outer = _DEADLINE.get()
+    inner = None if seconds is None else (time.monotonic() + float(seconds), float(seconds))
+    if outer is not None and (inner is None or outer[0] <= inner[0]):
+        inner = outer
+    token = _DEADLINE.set(inner)
+    try:
+        yield
+    finally:
+        _DEADLINE.reset(token)
+
+
+def _timeout_error(budget: float, stage: str, **details):
+    return error(
+        "TIMEOUT",
+        f"request.timeout of {budget:g}s elapsed during {stage}",
+        timeout=budget, stage=stage, **details,
+    )
+
+
+def check_deadline(stage: str) -> None:
+    """Raise ``TIMEOUT`` if the current request's budget is spent."""
+
+    current = _DEADLINE.get()
+    if current is not None and time.monotonic() >= current[0]:
+        raise _timeout_error(current[1], stage)
 
 
 def run_argv(argv: List[str], timeout: Optional[float] = None, *, binary_stdout: bool = False) -> ProcessResult:
@@ -78,6 +148,12 @@ def run_argv(argv: List[str], timeout: Optional[float] = None, *, binary_stdout:
     ``stdout`` is then empty) - for the rawvideo frame readouts in
     measurements/temporal.py and measurements/text_legibility.py, which
     must never be decoded as text.
+
+    ``timeout`` is this call's own ceiling; when it is the one that runs
+    out the result comes back with ``timed_out=True`` and the caller turns
+    it into ``TOOL_ERROR``. When the request's ``request_deadline`` runs out
+    first, the child's process group is killed and ``TIMEOUT`` is raised
+    here instead.
     """
 
     for arg in argv:
@@ -85,6 +161,17 @@ def run_argv(argv: List[str], timeout: Optional[float] = None, *, binary_stdout:
             raise error("INTERNAL_ERROR", "non-string argv element", argv=argv)
         if "\x00" in arg:
             raise error("INTERNAL_ERROR", "argv element contains a NUL byte")
+
+    stage = os.path.basename(argv[0]) if argv else "subprocess"
+    current = _DEADLINE.get()
+    deadline_binds = False
+    if current is not None:
+        remaining = current[0] - time.monotonic()
+        if remaining <= 0:
+            raise _timeout_error(current[1], stage)
+        if timeout is None or remaining <= timeout:
+            timeout = remaining
+            deadline_binds = True
 
     start = time.monotonic()
     proc = subprocess.Popen(
@@ -100,8 +187,15 @@ def run_argv(argv: List[str], timeout: Optional[float] = None, *, binary_stdout:
         timed_out = False
     except subprocess.TimeoutExpired:
         _kill_group(proc)
-        stdout, stderr = proc.communicate()
+        try:
+            stdout, stderr = proc.communicate(timeout=10)
+        except subprocess.TimeoutExpired:  # a pipe still held open by something the kill missed
+            proc.kill()
+            proc.wait()
+            stdout, stderr = b"", b""
         timed_out = True
+        if deadline_binds:
+            raise _timeout_error(current[1], stage, seconds=round(time.monotonic() - start, 3))
 
     return ProcessResult(
         argv=argv,
