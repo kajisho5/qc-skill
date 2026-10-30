@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.2.0 - 2026-10-30
+
+- feat: flash (BT.1702), planned-cut accuracy and text legibility checks (#20) (e72cee7)
+
 ## v0.1.4 - 2026-10-30
 
 - Add ECOSYSTEM_ROADMAP.md: gaps, wiring and PR-sized steps from the 2026-10-30 ecosystem audit (#19) (7233538)
