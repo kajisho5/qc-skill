@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.2.1 - 2026-10-30
+
+- Enforce request.timeout: kill the process group, fail with TIMEOUT (#21) (dd00cf1)
+
 ## v0.2.0 - 2026-10-30
 
 - feat: flash (BT.1702), planned-cut accuracy and text legibility checks (#20) (e72cee7)
