@@ -596,3 +596,34 @@ running ffmpeg/ffprobe behind.
   and a retry then returns it at once), but the response is `TIMEOUT`.
   `timeout` is not part of the report identity: it changes whether a
   report is returned, never what it says.
+
+## ADR-020: every reported version is read from pyproject.toml, never from a constant in the code
+
+`qc_skill.VERSION` was a hard-coded `"0.1.0"` while the release workflow
+(`.github/workflows/release.yml` -> `scripts/release_version.py set`)
+bumps only `pyproject.toml`, so after v0.2.0/v0.2.1 `contract --json`,
+the contract's tool specs, `doctor --json` and every report's
+`skill_version` still said `0.1.0`.
+
+- **One source: `pyproject.toml`.** `qc_skill._version()` reads the
+  `version` line of this checkout's `pyproject.toml` (only if its `name`
+  is `qc-skill`) when running from source - which includes an editable
+  install, whose recorded distribution metadata goes stale on the next
+  release bump - and otherwise `importlib.metadata.version("qc-skill")`,
+  i.e. the metadata of the installed wheel, built from that same file. If
+  neither is found it reports `0.0.0+unknown` rather than a plausible but
+  wrong number. Same rule as media-analysis-skill and subtitle-skill.
+- **Not chosen: have the release workflow also bump the constant.** That
+  keeps two copies of the version and relies on a second regex write
+  staying in step with the first; one copy cannot drift.
+- **Guarded by a test.** `tests/test_version_source.py` asserts that
+  `VERSION`, `skill_contract()["version"]`, `tool_spec(...)["version"]`,
+  `doctor_report()["skill"]["version"]` and the CLI's `contract --json` /
+  `doctor --json` all equal the version in `pyproject.toml`.
+- **Effect on callers.** qc now reports its real release version
+  (`0.2.x` at the time of writing). A caller that gates on the `"0.1."`
+  prefix (`video-production-agent`'s `tools/qc/adapter.py`, see ADR-010)
+  will refuse it until that caller accepts `0.2.`; the contract itself is
+  unchanged (`contract_version` stays `"1"`). `skill_version` is part of a
+  report's identity, so reports cached under the old `0.1.0` label are
+  recomputed rather than reused.
