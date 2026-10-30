@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.2.3 - 2026-10-30
+
+- Opt-in VMAF/SSIM/PSNR reference metrics, UNKNOWN without libvmaf (roadmap step 3) (#23) (d84801b)
+
 ## v0.2.2 - 2026-10-30
 
 - Report the pyproject.toml version everywhere instead of a stale 0.1.0 constant (#22) (4499f6d)
