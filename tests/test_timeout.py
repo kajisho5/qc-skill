@@ -64,14 +64,15 @@ def _group_gone(pgid: int) -> bool:
 
 @pytest.fixture()
 def spawned(monkeypatch):
-    """Record every child run_argv starts."""
+    """Record every child run_argv starts (not the taskkill it runs to kill one)."""
 
     procs = []
     real_popen = subprocess.Popen
 
-    def recording_popen(*args, **kwargs):
-        proc = real_popen(*args, **kwargs)
-        procs.append(proc)
+    def recording_popen(argv, *args, **kwargs):
+        proc = real_popen(argv, *args, **kwargs)
+        if "taskkill" not in os.path.basename(str(argv[0])).lower():  # the Windows killer itself
+            procs.append(proc)
         return proc
 
     monkeypatch.setattr(runner.subprocess, "Popen", recording_popen)
