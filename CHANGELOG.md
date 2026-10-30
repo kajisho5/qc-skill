@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.1.4 - 2026-10-30
+
+- Add ECOSYSTEM_ROADMAP.md: gaps, wiring and PR-sized steps from the 2026-10-30 ecosystem audit (#19) (7233538)
+
 ## v0.1.3 - 2026-10-25
 
 - Add MIT LICENSE (adf6cfa)
