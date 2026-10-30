@@ -33,6 +33,9 @@ exactly (e.g. `clean.mp4` is defined as 320x240 @25fps, 100 frames, mono
 | `flash_dim.mp4`, `flash_bright_only.mp4` | ~1 cd/m2 swing (no change) / darker side ~179 cd/m2 (no SDR flash) |
 | `cuts.mp4` | four flat shots, cuts at frames 25/60/90 of 25 fps (1.0/2.4/3.6 s) |
 | `text_boxes.mp4` | 640x360 drawbox "glyph" bars: white 40 px, #2A2A2A 40 px (low contrast), white 6 px |
+| `ref_master.mp4` | 320x240 @25fps, 2 s, crf 1 - the reference for VMAF/SSIM/PSNR (and, compared with itself, the identical pair) |
+| `ref_degraded.mp4`, `ref_small.mp4` | the master blurred + crf 51 (below every default threshold) / at 160x120 (compared after upscaling) |
+| `ref_30fps.mp4`, `ref_short.mp4` | 30 fps / first 25 frames only - refused alignments (UNKNOWN) |
 
 ## Test matrix
 
@@ -66,6 +69,13 @@ exactly (e.g. `clean.mp4` is defined as 320x240 @25fps, 100 frames, mono
   `TIMEOUT` (exit 15) through the library and the CLI and leaves no child
   or process group behind; a running ffmpeg and a child's own grandchild
   are killed when the budget runs out (ADR-019).
+- **Reference metrics** (`test_reference_metrics.py`) - VMAF/SSIM/PSNR
+  (ADR-021): identical PASS, degraded FAIL at the defaults, size mismatch
+  scaled, frame-rate/length mismatch refused, libvmaf missing (simulated
+  everywhere, real where the host ffmpeg lacks it) -> VMAF UNKNOWN with
+  SSIM/PSNR still scored. The real VMAF tests skip when the host ffmpeg
+  has no libvmaf, unless `QC_REQUIRE_LIBVMAF=1` (set on the CI job whose
+  ffmpeg has it), which makes them fail instead.
 - **Security** (`test_security.py`, `test_security_injection.py`) -
   forbidden request keys (including nested), shell-metacharacter
   filenames, path traversal, prefix collision, symlink escape (input and

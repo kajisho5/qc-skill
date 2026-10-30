@@ -19,6 +19,13 @@
   constructed internally from numeric parameters (thresholds,
   min-durations) - a caller can tune *sensitivity*, never inject arbitrary
   filter syntax.
+- The one two-input invocation (`ffmpeg_two_input_argv`, full-reference
+  metrics, ADR-021) takes exactly two resolved, validated paths (`input`
+  and `reference_video`, both through `PathPolicy.resolve_input`) and a
+  `-filter_complex` built in `measurements/reference.py` from fixed filter
+  names, ffprobe-reported integers and an allow-listed pixel format.
+  libvmaf always uses its built-in default model: no model path, log path
+  or other file name ever reaches the graph.
 - `-protocol_whitelist file` is always set, so an input path can never be
   reinterpreted by ffmpeg as a network/pipe/concat/device source.
 - The child process runs with a minimal, explicit environment (`PATH`,

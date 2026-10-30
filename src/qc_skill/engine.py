@@ -20,6 +20,7 @@ from .canonical import sha256_file, stable_hash
 from .capabilities import CapabilitySet
 from .errors import error
 from .measurements.audio import analyze_audio, measure_audio_streams
+from .measurements.reference import analyze_reference_metrics, not_performed as reference_not_performed
 from .measurements.subtitle import measure_subtitle
 from .measurements.temporal import analyze_temporal
 from .measurements.text_legibility import analyze_text_regions
@@ -106,11 +107,14 @@ def _dedupe_measurements(measurements: List[QCMeasurement]) -> List[QCMeasuremen
 
 def _gather_video_measurements(
     ctx: ExecutionContext, input_path: Path, params: Dict[str, Any], size_bytes: int,
-    video_rule: Optional[VideoRule] = None,
+    video_rule: Optional[VideoRule] = None, reference_path: Optional[Path] = None,
 ) -> List[QCMeasurement]:
     """``video_rule`` only decides which *opt-in* measurements are taken
-    (flash analysis, scene cuts, text regions - ADR-016/017/018); every
-    other measurement is rule-independent, exactly as before."""
+    (flash analysis, scene cuts, text regions, reference metrics -
+    ADR-016/017/018/021); every other measurement is rule-independent,
+    exactly as before. ``reference_path`` is the resolved
+    ``request.reference_video``, passed only when the rule asks for
+    reference metrics."""
 
     probe_data = probe_media(ctx.capabilities.ffprobe_path, input_path)
     measurements = measure_container(probe_data, actual_size_bytes=size_bytes)
@@ -136,7 +140,9 @@ def _gather_video_measurements(
             luminance_legal_max=params["luminance_legal_max"],
         )
         measurements += result.measurements
-        measurements += _gather_opt_in_video_measurements(ctx, input_path, params, v_streams[0]["index"], measurements, video_rule)
+        measurements += _gather_opt_in_video_measurements(
+            ctx, input_path, params, v_streams[0]["index"], measurements, video_rule, reference_path,
+        )
     elif v_streams:
         measurements.append(
             QCMeasurement(
@@ -144,7 +150,44 @@ def _gather_video_measurements(
                 source="ffmpeg:decode", notes="not performed: ffmpeg is not available",
             )
         )
+        if video_rule is not None and video_rule.reference_metrics:
+            measurements += reference_not_performed(video_rule.reference_metrics, "ffmpeg is not available")
     return measurements
+
+
+def _stream_facts(measurements: List[QCMeasurement]) -> Dict[str, Any]:
+    known = {m.id: m.value for m in measurements}
+    return {
+        "width": known.get("video.width"),
+        "height": known.get("video.height"),
+        "frame_rate": known.get("video.frame_rate"),
+        "frame_count": known.get("video.frame_count"),
+        "duration_sec": known.get("container.duration_sec"),
+        "pix_fmt": known.get("video.pixel_format"),
+    }
+
+
+def _gather_reference_metrics(
+    ctx: ExecutionContext, input_path: Path, stream_index: int, measurements: List[QCMeasurement],
+    metrics: List[str], reference_path: Optional[Path],
+) -> List[QCMeasurement]:
+    """ADR-021: compare the input against ``request.reference_video``."""
+
+    if reference_path is None:
+        return reference_not_performed(
+            metrics, "no request.reference_video was supplied (reference metrics need kind=video or kind=delivery with request.reference_video)",
+        )
+    ref_probe = probe_media(ctx.capabilities.ffprobe_path, reference_path)
+    ref_measurements = measure_container(ref_probe) + measure_video_streams(ref_probe)
+    ref_streams = video_streams(ref_probe)
+    return analyze_reference_metrics(
+        ctx.capabilities.ffmpeg_path, input_path, stream_index, reference_path,
+        ref_streams[0]["index"] if ref_streams else 0,
+        distorted=_stream_facts(measurements),
+        reference=_stream_facts(ref_measurements),
+        metrics=list(metrics),
+        vmaf_available=ctx.capabilities.filter_available("libvmaf"),
+    )
 
 
 def _gather_opt_in_video_measurements(
@@ -154,6 +197,7 @@ def _gather_opt_in_video_measurements(
     stream_index: int,
     measurements: List[QCMeasurement],
     video_rule: Optional[VideoRule],
+    reference_path: Optional[Path] = None,
 ) -> List[QCMeasurement]:
     if video_rule is None:
         return []
@@ -175,6 +219,8 @@ def _gather_opt_in_video_measurements(
             ctx.capabilities.ffmpeg_path, input_path, stream_index, video_rule.text_regions,
             frame_width=known.get("video.width"), frame_height=known.get("video.height"),
         ).measurements
+    if video_rule.reference_metrics:
+        out += _gather_reference_metrics(ctx, input_path, stream_index, measurements, video_rule.reference_metrics, reference_path)
     return out
 
 
@@ -276,6 +322,18 @@ def _with_requirement(sub_rule, cls, field_name: str, delivery_level_value: Opti
     return replace(sub_rule, **{field_name: delivery_level_value})
 
 
+def _applicable_video_rule(request: Request) -> Optional[VideoRule]:
+    if request.kind == "video":
+        return request.video_rule
+    if request.kind == "delivery" and request.delivery_rule is not None:
+        return request.delivery_rule.video
+    return None
+
+
+def _wants_reference_metrics(rule: Optional[VideoRule]) -> bool:
+    return rule is not None and bool(rule.reference_metrics)
+
+
 def _effective_parameters(request: Request) -> Dict[str, Any]:
     return {**DEFAULT_PARAMETERS, **request.parameters}
 
@@ -356,7 +414,12 @@ def _run_report(request: Request, ctx: ExecutionContext) -> Dict[str, Any]:
         subtitle_fingerprint = sha256_file(subtitle_path)
     reference_video_path = None
     reference_fingerprint = None
-    if request.kind == "subtitle" and request.reference_video:
+    if request.reference_video and (
+        request.kind == "subtitle" or _wants_reference_metrics(_applicable_video_rule(request))
+    ):
+        # kind=video/delivery read the reference only when the VideoRule
+        # opts into reference metrics (ADR-021): otherwise reference_video
+        # stays ignored there, as before, and the identity is unchanged.
         reference_video_path = ctx.path_policy.resolve_input(request.reference_video)
         reference_fingerprint = sha256_file(reference_video_path)
 
@@ -410,7 +473,9 @@ def _run_report(request: Request, ctx: ExecutionContext) -> Dict[str, Any]:
     video_duration_sec = None
 
     if request.kind == "video":
-        measurements = _gather_video_measurements(ctx, input_path, effective_parameters, size_bytes, request.video_rule)
+        measurements = _gather_video_measurements(
+            ctx, input_path, effective_parameters, size_bytes, request.video_rule, reference_video_path,
+        )
         duration_m = next((m for m in measurements if m.id == "container.duration_sec"), None)
         video_duration_sec = duration_m.value if duration_m else None
     elif request.kind == "audio":
@@ -431,7 +496,9 @@ def _run_report(request: Request, ctx: ExecutionContext) -> Dict[str, Any]:
         a = audio_streams(fmt_probe)
         if v:
             delivery_video_rule = request.delivery_rule.video if request.delivery_rule is not None else None
-            measurements += _gather_video_measurements(ctx, input_path, effective_parameters, size_bytes, delivery_video_rule)
+            measurements += _gather_video_measurements(
+                ctx, input_path, effective_parameters, size_bytes, delivery_video_rule, reference_video_path,
+            )
         else:
             measurements += measure_video_streams(fmt_probe)
         if a:

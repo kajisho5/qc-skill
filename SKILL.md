@@ -64,6 +64,18 @@ Three opt-in `VideoRule` checks (each measured only when asked, ADR-016/017/018)
   at a 1080 px short side (`min_text_height_px` per role, no default)
   -> `TEXT_ILLEGIBLE`. Measured facts only; no OCR.
 
+One opt-in full-reference comparison (ADR-021), `kind: video` or
+`rules.delivery.video`, against the top-level `reference_video`:
+
+- `reference_metrics: ["vmaf", "ssim", "psnr"]` (any subset) ->
+  `video.vmaf_meets_minimum` (`min_vmaf` default 93),
+  `video.ssim_meets_minimum` (`min_ssim` default 0.95),
+  `video.psnr_meets_minimum` (`min_psnr_db` default 31). A smaller input
+  is upscaled to the reference's size; a different frame rate or a length
+  more than one frame apart is refused (checks UNKNOWN, reason in
+  `video.reference_alignment`). Without libvmaf in the host's ffmpeg (see
+  doctor `filter:libvmaf`) VMAF is UNKNOWN and SSIM/PSNR still run.
+
 ## Example
 
 ```json
@@ -82,6 +94,7 @@ Response: `{"status": "completed", "report": {"overall_status": "PASS"|"WARN"|"F
 1. Call `doctor --json` once per environment to confirm ffmpeg/ffprobe and
    the filters you need (`blackdetect`, `freezedetect`, `ebur128`,
    `astats`, `silencedetect`) are `AVAILABLE`, not just installed-in-theory.
+   Before asking for VMAF, check `checks["filter:libvmaf"].status`.
 2. Use `inspect` first when you don't yet know what to expect (e.g. before
    you have a delivery spec) - it returns pure measurements you can reason
    over yourself.

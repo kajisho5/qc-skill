@@ -286,3 +286,32 @@ def ffmpeg_rawvideo_argv(
     else:
         argv.extend(["-f", "rawvideo", "-pix_fmt", pix_fmt, "-"])
     return argv
+
+
+def ffmpeg_two_input_argv(
+    executable: str,
+    distorted_path: Path,
+    reference_path: Path,
+    filter_complex: str,
+    outputs: List[str],
+) -> List[str]:
+    """Build a fixed 'decode two files, compare, write nothing' ffmpeg
+    invocation for the full-reference metrics (ADR-021).
+
+    ``filter_complex`` is built by measurements/reference.py from fixed
+    filter names, ffprobe-reported integers and an allow-listed pixel
+    format - never caller text; the graph selects each file's video
+    stream by its ffprobe index (``[0:<index>]``, ``[1:<index>]``).
+    ``-protocol_whitelist file`` is set for each input.
+    """
+
+    argv = [
+        executable, "-hide_banner", "-nostdin", "-v", "info",
+        "-protocol_whitelist", "file", "-i", str(distorted_path),
+        "-protocol_whitelist", "file", "-i", str(reference_path),
+        "-filter_complex", filter_complex,
+    ]
+    for label in outputs:
+        argv.extend(["-map", label])
+    argv.extend(["-f", "null", "-"])
+    return argv

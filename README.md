@@ -146,6 +146,12 @@ measurements/checks/findings per kind
 same list - the contract only ever advertises what is actually
 implemented.
 
+Full-reference quality metrics (VMAF/SSIM/PSNR) are opt-in: set
+`rules.video.reference_metrics` and pass the master as `reference_video`.
+VMAF needs an ffmpeg built with libvmaf (`qc doctor --json` reports
+`filter:libvmaf`); without it VMAF is `UNKNOWN` and SSIM/PSNR still run.
+See [docs/checks.md](docs/checks.md) and ADR-021.
+
 `contract["provides"]` groups these checks into ten cross-repository
 Capability ids (`measure.video.freeze`, `measure.video.black_frame`,
 `measure.video.format`, `measure.audio.integrity`,

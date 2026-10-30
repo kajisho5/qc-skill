@@ -21,6 +21,7 @@ from .rules import (
     DeliveryArtifactRule,
     DeliveryPackageRule,
     DeliveryRule,
+    REFERENCE_METRICS,
     SourceCue,
     TEXT_ROLES,
     SubtitleRule,
@@ -175,8 +176,25 @@ def _build_text_region(item: Any) -> TextRegion:
 
 
 def _validate_video_rule_fields(kwargs: Dict[str, Any]) -> None:
-    """Typed validation for the ADR-016/017/018 VideoRule fields, which
-    carry lists/objects rather than a single scalar."""
+    """Typed validation for the ADR-016/017/018/021 VideoRule fields, which
+    carry lists/objects (or bounded scores) rather than a free scalar."""
+
+    if kwargs.get("reference_metrics") is not None:
+        metrics = kwargs["reference_metrics"]
+        if not isinstance(metrics, list) or not metrics:
+            raise error("INVALID_REQUEST", f"VideoRule.reference_metrics must be a non-empty list of {list(REFERENCE_METRICS)}")
+        bad = [m for m in metrics if not isinstance(m, str) or m not in REFERENCE_METRICS]
+        if bad:
+            raise error("INVALID_REQUEST", f"VideoRule.reference_metrics entries must be one of {list(REFERENCE_METRICS)}", got=bad)
+        if len(set(metrics)) != len(metrics):
+            raise error("INVALID_REQUEST", "VideoRule.reference_metrics has duplicate entries")
+        kwargs["reference_metrics"] = [m for m in REFERENCE_METRICS if m in metrics]  # canonical order: stable identity
+    for name, upper in (("min_vmaf", 100.0), ("min_ssim", 1.0), ("min_psnr_db", None)):
+        if name in kwargs:
+            value = _number(kwargs[name], field_name=f"VideoRule.{name}", allow_negative=False)
+            if upper is not None and value > upper:
+                raise error("INVALID_REQUEST", f"VideoRule.{name} must be between 0 and {upper:g}")
+            kwargs[name] = value
 
     if "check_photosensitivity" in kwargs:
         _bool_or_none(kwargs["check_photosensitivity"], field_name="VideoRule.check_photosensitivity")
