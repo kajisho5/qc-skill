@@ -25,6 +25,7 @@ from .capabilities import detect_capabilities
 from .contract import doctor_report, skill_contract
 from .engine import ExecutionContext, run_report
 from .errors import QCError, error
+from .runner import request_deadline
 from .schemas import parse_request
 from .security import PathPolicy
 
@@ -94,9 +95,11 @@ def cmd_run(args: argparse.Namespace) -> int:
             cache_dir = args.cache_dir or os.path.join(workspace, ".qc-cache")
             cache = QCReportCache(directory=Path(cache_dir))
 
-        caps = detect_capabilities()
-        ctx = ExecutionContext(path_policy=path_policy, capabilities=caps, cache=cache)
-        response = run_report(request, ctx)
+        # request.timeout covers capability detection too (ADR-019)
+        with request_deadline(request.timeout):
+            caps = detect_capabilities()
+            ctx = ExecutionContext(path_policy=path_policy, capabilities=caps, cache=cache)
+            response = run_report(request, ctx)
     except QCError as err:
         if args.json:
             _print_json(_failure_envelope(err))

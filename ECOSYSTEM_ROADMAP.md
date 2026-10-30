@@ -21,7 +21,7 @@ Agent wires qc/check and qc/inspect (ADR-032); provides[] publishes only qc/run 
 
 ## Steps
 
-- [ ] **1. Enforce request.timeout** — kill the process group, TIMEOUT error
+- [x] **1. Enforce request.timeout** — kill the process group, TIMEOUT error (exit 15, retryable; ADR-019) ([#21](https://github.com/kajisho5/qc-skill/pull/21))
   - Done when: 0.01 s timeout test
 - [ ] **2. Per-operation tool_ids in provides** — qc/check, qc/inspect (keep qc/run alias)
   - Done when: no tool-id drift in agent diagnostics

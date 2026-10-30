@@ -79,8 +79,10 @@ caller already intended.
 
 ## What is *not* enforced
 
-- Resource limits (memory, disk, CPU) beyond a wall-clock `timeout` per
-  ffmpeg/ffprobe invocation.
+- Resource limits (memory, disk, CPU) beyond wall-clock time: a fixed
+  ceiling per ffmpeg/ffprobe invocation plus the request's own `timeout`
+  budget, which kills the running child's whole process group when it
+  runs out (ADR-019).
 - Confidentiality of the report cache directory - paths and fingerprints
   inside cached reports are plaintext (though tamper-detected via a stored
   content hash; see `docs/architecture.md#reuse--cache`).

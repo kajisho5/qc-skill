@@ -62,6 +62,10 @@ exactly (e.g. `clean.mp4` is defined as 320x240 @25fps, 100 frames, mono
   subprocesses, stdin and file-argument request delivery, malformed-JSON
   handling, and the execution-vs-QC-status distinction (`status:
   "completed"` with `overall_status: "FAIL"` exits 0).
+- **Timeout** (`test_timeout.py`) - `request.timeout: 0.01` fails with
+  `TIMEOUT` (exit 15) through the library and the CLI and leaves no child
+  or process group behind; a running ffmpeg and a child's own grandchild
+  are killed when the budget runs out (ADR-019).
 - **Security** (`test_security.py`, `test_security_injection.py`) -
   forbidden request keys (including nested), shell-metacharacter
   filenames, path traversal, prefix collision, symlink escape (input and
