@@ -22,7 +22,9 @@ from .rules import (
     DeliveryPackageRule,
     DeliveryRule,
     SourceCue,
+    TEXT_ROLES,
     SubtitleRule,
+    TextRegion,
     TimelineIntegrityRule,
     TimelineSegment,
     VideoRule,
@@ -51,6 +53,7 @@ _ALLOWED_PARAMETER_KEYS = {
     "luminance_legal_min", "luminance_legal_max",
     "silence_threshold_db", "silence_min_duration_sec", "clipping_threshold_dbfs",
     "max_line_length", "max_cue_duration_sec", "max_gap_sec",
+    "flash_area_fraction", "scene_cut_threshold",
 }
 
 
@@ -117,6 +120,8 @@ def _build_rule(cls, data: Optional[Dict[str, Any]]):
     if unknown:
         raise error("INVALID_REQUEST", f"unknown fields for {cls.__name__}: {sorted(unknown)}")
     kwargs = dict(data)
+    if cls is VideoRule:
+        _validate_video_rule_fields(kwargs)
     if "video" in kwargs and kwargs["video"] is not None:
         kwargs["video"] = _build_rule(VideoRule, kwargs["video"])
     if "audio" in kwargs and kwargs["audio"] is not None:
@@ -137,6 +142,86 @@ def _number(value: Any, *, field_name: str, allow_negative: bool = True) -> floa
     if not allow_negative and value < 0:
         raise error("INVALID_REQUEST", f"{field_name} must not be negative")
     return float(value)
+
+
+def _bool_or_none(value: Any, *, field_name: str) -> Optional[bool]:
+    if value is not None and not isinstance(value, bool):
+        raise error("INVALID_REQUEST", f"{field_name} must be a boolean")
+    return value
+
+
+def _build_text_region(item: Any) -> TextRegion:
+    if not isinstance(item, dict):
+        raise error("INVALID_REQUEST", "each entry in VideoRule.text_regions must be an object")
+    unknown = set(item) - {"t", "box", "role"}
+    if unknown:
+        raise error("INVALID_REQUEST", f"unknown fields for a text region: {sorted(unknown)}")
+    for key in ("t", "box", "role"):
+        if key not in item:
+            raise error("INVALID_REQUEST", f"text region is missing required field {key!r}")
+    t = _number(item["t"], field_name="text region.t", allow_negative=False)
+    box = item["box"]
+    if (
+        not isinstance(box, list) or len(box) != 4
+        or not all(isinstance(v, int) and not isinstance(v, bool) for v in box)
+    ):
+        raise error("INVALID_REQUEST", "text region.box must be a list of four integers [x, y, w, h]")
+    x, y, w, h = box
+    if x < 0 or y < 0 or w <= 0 or h <= 0:
+        raise error("INVALID_REQUEST", "text region.box needs x, y >= 0 and w, h > 0")
+    if item["role"] not in TEXT_ROLES:
+        raise error("INVALID_REQUEST", f"text region.role must be one of {list(TEXT_ROLES)}", got=item["role"])
+    return TextRegion(t=t, box=[x, y, w, h], role=item["role"])
+
+
+def _validate_video_rule_fields(kwargs: Dict[str, Any]) -> None:
+    """Typed validation for the ADR-016/017/018 VideoRule fields, which
+    carry lists/objects rather than a single scalar."""
+
+    if "check_photosensitivity" in kwargs:
+        _bool_or_none(kwargs["check_photosensitivity"], field_name="VideoRule.check_photosensitivity")
+    if "max_flashes_per_second" in kwargs:
+        kwargs["max_flashes_per_second"] = _number(
+            kwargs["max_flashes_per_second"], field_name="VideoRule.max_flashes_per_second", allow_negative=False
+        )
+    if kwargs.get("expected_cuts") is not None:
+        cuts = kwargs["expected_cuts"]
+        if not isinstance(cuts, list):
+            raise error("INVALID_REQUEST", "VideoRule.expected_cuts must be a list of seconds")
+        kwargs["expected_cuts"] = sorted(_number(c, field_name="VideoRule.expected_cuts[]", allow_negative=False) for c in cuts)
+    if "max_cut_error_frames" in kwargs:
+        kwargs["max_cut_error_frames"] = _number(
+            kwargs["max_cut_error_frames"], field_name="VideoRule.max_cut_error_frames", allow_negative=False
+        )
+    if "allow_extra_cuts" in kwargs:
+        if not isinstance(kwargs["allow_extra_cuts"], bool):
+            raise error("INVALID_REQUEST", "VideoRule.allow_extra_cuts must be a boolean")
+    if "cut_match_window_sec" in kwargs:
+        window = _number(kwargs["cut_match_window_sec"], field_name="VideoRule.cut_match_window_sec", allow_negative=False)
+        if window == 0:
+            raise error("INVALID_REQUEST", "VideoRule.cut_match_window_sec must be greater than zero")
+        kwargs["cut_match_window_sec"] = window
+    if kwargs.get("text_regions") is not None:
+        regions = kwargs["text_regions"]
+        if not isinstance(regions, list):
+            raise error("INVALID_REQUEST", "VideoRule.text_regions must be a list")
+        kwargs["text_regions"] = [_build_text_region(r) for r in regions]
+    if "min_contrast_ratio" in kwargs:
+        ratio = _number(kwargs["min_contrast_ratio"], field_name="VideoRule.min_contrast_ratio", allow_negative=False)
+        if ratio < 1.0 or ratio > 21.0:
+            raise error("INVALID_REQUEST", "VideoRule.min_contrast_ratio must be between 1 and 21")
+        kwargs["min_contrast_ratio"] = ratio
+    if kwargs.get("min_text_height_px") is not None:
+        heights = kwargs["min_text_height_px"]
+        if not isinstance(heights, dict):
+            raise error("INVALID_REQUEST", "VideoRule.min_text_height_px must be an object keyed by role")
+        unknown_roles = set(heights) - set(TEXT_ROLES)
+        if unknown_roles:
+            raise error("INVALID_REQUEST", f"VideoRule.min_text_height_px has unknown roles: {sorted(unknown_roles)}")
+        kwargs["min_text_height_px"] = {
+            role: _number(v, field_name=f"VideoRule.min_text_height_px.{role}", allow_negative=False)
+            for role, v in sorted(heights.items())
+        }
 
 
 def _build_timeline_segment(item: Any) -> TimelineSegment:
@@ -361,6 +446,14 @@ def parse_request(doc: Any) -> Request:
     unknown_params = set(parameters) - _ALLOWED_PARAMETER_KEYS
     if unknown_params:
         raise error("INVALID_REQUEST", f"unknown parameter keys: {sorted(unknown_params)}")
+    if "flash_area_fraction" in parameters:
+        fraction = _number(parameters["flash_area_fraction"], field_name="parameters.flash_area_fraction", allow_negative=False)
+        if not 0 < fraction < 1:
+            raise error("INVALID_REQUEST", "parameters.flash_area_fraction must be between 0 and 1 (exclusive)")
+    if "scene_cut_threshold" in parameters:
+        threshold = _number(parameters["scene_cut_threshold"], field_name="parameters.scene_cut_threshold", allow_negative=False)
+        if threshold > 100:
+            raise error("INVALID_REQUEST", "parameters.scene_cut_threshold must be between 0 and 100")
 
     rules_doc = doc.get("rules", {})
     if not isinstance(rules_doc, dict):

@@ -30,6 +30,7 @@ request
   -> PathPolicy.resolve_input()          # STEP 15/16: confinement, traversal/symlink checks
   -> probe_media() (ffprobe)             # STEP 3: structured container/stream facts, never raw stdout
   -> measurements/{video,audio,subtitle} # STEP 3-7: typed QCMeasurement objects
+     (+ temporal, text_legibility: opt-in, only when a VideoRule asks - ADR-016/017/018)
   -> rules.evaluate_*()                  # STEP 9/10: typed Rule + Measurement -> QCCheck + QCFinding
   -> QCReport                            # STEP 1: checks + measurements + findings + overall_status
   -> provenance + cache                  # STEP 14/21

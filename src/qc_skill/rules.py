@@ -78,6 +78,21 @@ def _equality_check(
 # ---------------------------------------------------------------------------
 
 
+TEXT_ROLES = ("hook", "cta", "caption", "term")
+
+
+@dataclass
+class TextRegion:
+    """One caller-named on-screen text region to measure (ADR-018):
+    ``t`` seconds, ``box`` ``[x, y, w, h]`` in the video's own pixel
+    coordinates, ``role`` one of ``TEXT_ROLES``. qc-skill never finds
+    text itself - it only measures where it is told text is."""
+
+    t: float
+    box: List[int]
+    role: str
+
+
 @dataclass
 class VideoRule:
     expected_width: Optional[int] = None
@@ -102,6 +117,18 @@ class VideoRule:
     max_single_luminance_excursion_sec: Optional[float] = None
     max_total_luminance_excursion_sec: Optional[float] = None
     max_decode_errors: int = 0  # baseline tolerance; 0 = any decode error fails
+    # --- photosensitive flashes, ITU-R BT.1702 (ADR-016) ---
+    check_photosensitivity: Optional[bool] = None  # opt-in: runs the extra flash-analysis decode
+    max_flashes_per_second: float = 3.0  # BT.1702-3 Guideline 1: "more than three flashes ... within any one-second period"
+    # --- planned-cut accuracy (ADR-017) ---
+    expected_cuts: Optional[List[float]] = None  # seconds; e.g. a renderer's IR cut list
+    max_cut_error_frames: float = 1.0
+    allow_extra_cuts: bool = True
+    cut_match_window_sec: float = 0.5
+    # --- text legibility (ADR-018) ---
+    text_regions: Optional[List[TextRegion]] = None
+    min_contrast_ratio: float = 4.5  # WCAG 2.x AA, normal text (7.0 = AAA)
+    min_text_height_px: Optional[Dict[str, float]] = None  # per role, at a 1080 px short side; None = no opinion
 
 
 def evaluate_video(
@@ -424,7 +451,145 @@ def evaluate_video(
                 check.finding_codes.append(f.code)
             checks.append(check)
 
+    # --- policy: photosensitive flashes, ITU-R BT.1702 (ADR-016) ---
+    if rule.check_photosensitivity:
+        _evaluate_flashes(checks, findings, measurements, rule)
+
+    # --- policy: planned-cut accuracy (ADR-017) ---
+    if rule.expected_cuts is not None:
+        _evaluate_cuts(checks, findings, measurements, rule)
+
+    # --- policy: text legibility (ADR-018) ---
+    if rule.text_regions:
+        _evaluate_text_regions(checks, findings, measurements, rule)
+
     return checks, findings
+
+
+def _evaluate_flashes(checks: List[QCCheck], findings: List[QCFinding], measurements: MeasurementMap, rule: VideoRule) -> None:
+    ids = ["video.flash_worst_window", "video.flash_per_second", "video.red_flash_count"]
+    worst = _val(measurements, "video.flash_worst_window")
+    if worst is None:
+        m = measurements.get("video.flash_worst_window")
+        reason = (m.notes if m is not None and m.notes else "flash analysis was not performed")
+        checks.append(_unknown_check("video.photosensitive_flash_within_limit", "video", reason, ids))
+        return
+    limit = rule.max_flashes_per_second
+    per_second = _val(measurements, "video.flash_per_second") or []
+    over = [s for s in per_second if s["flashes"] > limit]
+    red = "UNKNOWN (not evaluated; BT.1702-3 gives no definition of saturated red)"
+    status = QCStatus.FAIL if worst["flashes"] > limit else QCStatus.PASS
+    check = QCCheck(
+        "video.photosensitive_flash_within_limit", "video", status, ids,
+        evidence={"worst_window": worst, "max_flashes_per_second": limit, "red_flash": red},
+    )
+    if status == QCStatus.FAIL:
+        f = QCFinding(
+            "VIDEO_FLASH_RISK", FindingSeverity.FAIL,
+            f"{worst['flashes']} area-qualified flashes in the 1s window starting at {worst['start']}s "
+            f"exceed the limit of {limit} (ITU-R BT.1702 general flash)",
+            evidence={"worst_window": worst, "seconds_over_limit": over, "max_flashes_per_second": limit, "red_flash": red},
+            measurement_ids=ids,
+        )
+        findings.append(f)
+        check.finding_codes.append(f.code)
+    checks.append(check)
+
+
+def match_cuts(expected: List[float], detected: List[float], fps: float, window_sec: float) -> Dict[str, Any]:
+    """Deterministic nearest-match: each expected cut, in time order,
+    takes the nearest still-unmatched detected cut within ``window_sec``
+    (ties go to the earlier detected cut). Pure function."""
+
+    used = [False] * len(detected)
+    matched, missing = [], []
+    for e in sorted(expected):
+        best_i, best_d = None, None
+        for i, d in enumerate(detected):
+            if used[i]:
+                continue
+            dist = abs(d - e)
+            if dist <= window_sec + 1e-9 and (best_d is None or dist < best_d - 1e-12):
+                best_i, best_d = i, dist
+        if best_i is None:
+            missing.append(e)
+        else:
+            used[best_i] = True
+            matched.append({"expected": e, "detected": detected[best_i], "error_frames": round(best_d * fps, 3)})
+    extra = [d for i, d in enumerate(detected) if not used[i]]
+    max_error = max((m["error_frames"] for m in matched), default=0.0)
+    return {"matched": matched, "missing": missing, "extra": extra, "max_error_frames": max_error}
+
+
+def _evaluate_cuts(checks: List[QCCheck], findings: List[QCFinding], measurements: MeasurementMap, rule: VideoRule) -> None:
+    ids = ["video.scene_cuts", "video.frame_rate"]
+    cuts = _val(measurements, "video.scene_cuts")
+    fps = _val(measurements, "video.frame_rate")
+    if cuts is None or not fps:
+        checks.append(_unknown_check("video.cuts_match_expected", "video", "scene cuts or frame rate could not be measured", ids))
+        return
+    result = match_cuts(list(rule.expected_cuts or []), [c["time"] for c in cuts], fps, rule.cut_match_window_sec)
+    violations = []
+    if result["missing"]:
+        violations.append(f"{len(result['missing'])} expected cut(s) not found within {rule.cut_match_window_sec}s")
+    if result["max_error_frames"] > rule.max_cut_error_frames:
+        violations.append(f"max cut error {result['max_error_frames']} frames exceeds {rule.max_cut_error_frames}")
+    if result["extra"] and not rule.allow_extra_cuts:
+        violations.append(f"{len(result['extra'])} unplanned cut(s) detected and allow_extra_cuts is false")
+    evidence = {**result, "max_cut_error_frames": rule.max_cut_error_frames, "allow_extra_cuts": rule.allow_extra_cuts}
+    status = QCStatus.FAIL if violations else QCStatus.PASS
+    check = QCCheck("video.cuts_match_expected", "video", status, ids, evidence=evidence)
+    if violations:
+        f = QCFinding("VIDEO_CUT_MISMATCH", FindingSeverity.FAIL, "; ".join(violations), evidence=evidence, measurement_ids=ids)
+        findings.append(f)
+        check.finding_codes.append(f.code)
+    checks.append(check)
+
+
+def _evaluate_text_regions(checks: List[QCCheck], findings: List[QCFinding], measurements: MeasurementMap, rule: VideoRule) -> None:
+    ids = ["video.text_regions"]
+    regions = _val(measurements, "video.text_regions")
+    if regions is None:
+        checks.append(_unknown_check("video.text_legible", "video", "text regions could not be measured", ids))
+        return
+    min_heights = rule.min_text_height_px or {}
+    failing, unmeasured = [], []
+    for r in regions:
+        if not r.get("measured"):
+            unmeasured.append({"index": r["index"], "reason": r.get("reason")})
+            continue
+        problems = []
+        if r["contrast_ratio"] < rule.min_contrast_ratio:
+            problems.append(f"contrast {r['contrast_ratio']}:1 < {rule.min_contrast_ratio}:1")
+        floor = min_heights.get(r["role"])
+        if floor is not None:
+            height = r.get("text_height_px_at_1080")
+            if height is None:
+                unmeasured.append({"index": r["index"], "reason": "text height at 1080 could not be computed"})
+            elif height < floor:
+                problems.append(f"text height {height}px@1080 < {floor}px ({r['role']})")
+        if problems:
+            failing.append({"index": r["index"], "t": r["t"], "role": r["role"], "problems": problems})
+    evidence = {"failing": failing, "unmeasured": unmeasured, "min_contrast_ratio": rule.min_contrast_ratio, "min_text_height_px": min_heights}
+    if failing:
+        status = QCStatus.FAIL
+    elif unmeasured:
+        status = QCStatus.UNKNOWN
+    else:
+        status = QCStatus.PASS
+    check = QCCheck(
+        "video.text_legible", "video", status, ids, evidence=evidence,
+        reason="one or more text regions could not be measured" if status == QCStatus.UNKNOWN else None,
+    )
+    if failing:
+        f = QCFinding(
+            "TEXT_ILLEGIBLE", FindingSeverity.FAIL,
+            f"{len(failing)} text region(s) below the contrast/height minimum",
+            evidence=evidence, measurement_ids=ids,
+        )
+        findings.append(f)
+        check.finding_codes.append(f.code)
+    checks.append(check)
 
 
 # ---------------------------------------------------------------------------

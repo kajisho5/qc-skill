@@ -84,6 +84,64 @@ call via `max_single_luminance_excursion_sec`/
 is required (a full-range web/streaming delivery may legitimately use
 0-255).
 
+### Opt-in visual checks: photosensitive flashes, planned cuts, text legibility (ADR-016/017/018)
+
+These three are measured **only when the applicable `VideoRule` asks for
+them** (standalone `kind: video`, `delivery.video`, or a
+`delivery_package` artifact's `video` rule - no kind-specific plumbing),
+so a request that asks for none of them still decodes the file once
+(ADR-006). Flash and cut analysis share one extra decode; text regions
+decode one frame per region. Pure Python + ffmpeg, no numpy.
+
+**Measurements** (`src/qc_skill/measurements/temporal.py`, `text_legibility.py`):
+
+| id | source | notes |
+|---|---|---|
+| `video.flash_per_second` | ffmpeg `extractplanes` + area scale to a 32x32 grid | `[{start, end, flashes, changes}]` per 1-second bin, area-qualified (see below); `null` for HDR (PQ/HLG) transfer - no BT.1702 HDR mapping is implemented |
+| `video.flash_worst_window` | same | `{start, end, flashes, changes, area_fraction}` - the sliding 1-second window (starting at every frame) with the most area-qualified changes |
+| `video.red_flash_count` | not measured | always `null`: BT.1702-3 names "a transition to or from a saturated red" but does not define saturated red (its Annex 3 says more explicit definitions are still required), so qc-skill reports UNKNOWN rather than invent one |
+| `video.scene_cuts` | ffmpeg `scdet` | `[{time, frame, score}]` - time/frame index of the first frame of each new shot |
+| `video.text_regions` | ffmpeg `crop` of one RGB frame per region | per region: `{index, t, box, role, measured, contrast_ratio, ink_luminance, background_luminance, ink_fraction, text_height_px, line_heights_px, text_height_px_at_1080}` or `{measured: false, reason}` |
+
+Flash measurement - ITU-R BT.1702-3 Guideline 1 (general flash, SDR):
+screen luminance `L = 200 * V^2.4` cd/m2 (Annex 2/Table 1: BT.1886,
+200 cd/m2 peak white) with `V = (Y - 16) / 219` on 8-bit limited-range
+luma (full-range input is converted to limited range first). Per grid
+cell, a *change* is an opposing excursion of >= 20 cd/m2 whose darker
+side is below 160 cd/m2; a *flash* is a pair of changes
+(`flashes = changes / 2`, so 7 changes = 3.5 flashes, "more than three").
+A window's area-qualified count is the largest `c` such that cells with
+>= `c` changes cover **more than** `flash_area_fraction` (detection
+parameter, default 0.25 = BT.1702's 25% of the screen). The grid cell
+luminance comes from an area average of code values (gamma domain): exact
+for uniform cells, an approximation at edges. These are stated
+assumptions about the display, not measurements of one.
+
+Text measurement - one frame at `t`, cropped to `box` `[x, y, w, h]`
+(the video's own pixel grid). Otsu's threshold on gamma-encoded luma
+splits the box into two classes; the minority class is the ink. Contrast
+is WCAG 2.x `(L1 + 0.05) / (L2 + 0.05)` on the classes' median
+sRGB-linearised relative luminance. `text_height_px` is the tallest run
+of pixel rows containing ink: the cap height for all-caps text without
+descenders, an **upper bound** on it otherwise (one box per text line is
+the intended use). `text_height_px_at_1080` scales it by
+`1080 / min(width, height)`. No OCR, no judgement of the words.
+
+**Policy checks:**
+
+| check_id | rule field(s) | finding |
+|---|---|---|
+| `video.photosensitive_flash_within_limit` | `check_photosensitivity: true` (opt-in), `max_flashes_per_second` (default 3, BT.1702) | `VIDEO_FLASH_RISK` when the worst window's area-qualified flashes exceed the limit; evidence carries `red_flash: UNKNOWN` |
+| `video.cuts_match_expected` | `expected_cuts` (seconds), `max_cut_error_frames` (default 1), `allow_extra_cuts` (default true), `cut_match_window_sec` (default 0.5) | `VIDEO_CUT_MISMATCH` when an expected cut has no detected cut within the window, the max matched error exceeds `max_cut_error_frames`, or (with `allow_extra_cuts: false`) an unplanned cut was detected |
+| `video.text_legible` | `text_regions: [{t, box: [x, y, w, h], role: hook\|cta\|caption\|term}]`, `min_contrast_ratio` (default 4.5 = WCAG AA normal text; 7.0 = AAA), `min_text_height_px` (per role, px at a 1080 short side; no default - no opinion) | `TEXT_ILLEGIBLE` when any measured region is below a minimum; `UNKNOWN` when a region could not be measured (box outside the frame, no frame at `t`) and none failed |
+
+Cut matching is deterministic: expected cuts in time order each take the
+nearest still-unmatched detected cut within `cut_match_window_sec`; the
+check evidence lists `matched` (`{expected, detected, error_frames}`),
+`missing`, `extra`, and `max_error_frames`. `scene_cut_threshold`
+(detection parameter, default 10 = scdet's own default) sets scdet's
+sensitivity.
+
 ## Audio (`kind: "audio"`, and `kind: "delivery"` when an audio stream is present)
 
 **Measurements** (`src/qc_skill/measurements/audio.py`):

@@ -21,6 +21,8 @@ from .capabilities import CapabilitySet
 from .errors import error
 from .measurements.audio import analyze_audio, measure_audio_streams
 from .measurements.subtitle import measure_subtitle
+from .measurements.temporal import analyze_temporal
+from .measurements.text_legibility import analyze_text_regions
 from .measurements.video import analyze_video_defects, measure_container, measure_video_streams
 from .models import QCCheck, QCFinding, QCMeasurement, QCReport
 from .probe import audio_streams, probe_media, video_streams
@@ -28,6 +30,7 @@ from .rules import (
     AudioRule,
     DeliveryPackageRule,
     SubtitleRule,
+    VideoRule,
     evaluate_audio,
     evaluate_delivery_basics,
     evaluate_delivery_package,
@@ -50,6 +53,8 @@ DEFAULT_PARAMETERS: Dict[str, Any] = {
     "max_line_length": 42,
     "max_cue_duration_sec": 7.0,
     "max_gap_sec": 5.0,
+    "flash_area_fraction": 0.25,  # ITU-R BT.1702: "more than 25% of the displayed screen area"
+    "scene_cut_threshold": 10.0,  # ffmpeg scdet's own default
 }
 
 
@@ -99,8 +104,13 @@ def _dedupe_measurements(measurements: List[QCMeasurement]) -> List[QCMeasuremen
 
 
 def _gather_video_measurements(
-    ctx: ExecutionContext, input_path: Path, params: Dict[str, Any], size_bytes: int
+    ctx: ExecutionContext, input_path: Path, params: Dict[str, Any], size_bytes: int,
+    video_rule: Optional[VideoRule] = None,
 ) -> List[QCMeasurement]:
+    """``video_rule`` only decides which *opt-in* measurements are taken
+    (flash analysis, scene cuts, text regions - ADR-016/017/018); every
+    other measurement is rule-independent, exactly as before."""
+
     probe_data = probe_media(ctx.capabilities.ffprobe_path, input_path)
     measurements = measure_container(probe_data, actual_size_bytes=size_bytes)
     measurements += measure_video_streams(probe_data)
@@ -125,6 +135,7 @@ def _gather_video_measurements(
             luminance_legal_max=params["luminance_legal_max"],
         )
         measurements += result.measurements
+        measurements += _gather_opt_in_video_measurements(ctx, input_path, params, v_streams[0]["index"], measurements, video_rule)
     elif v_streams:
         measurements.append(
             QCMeasurement(
@@ -133,6 +144,37 @@ def _gather_video_measurements(
             )
         )
     return measurements
+
+
+def _gather_opt_in_video_measurements(
+    ctx: ExecutionContext,
+    input_path: Path,
+    params: Dict[str, Any],
+    stream_index: int,
+    measurements: List[QCMeasurement],
+    video_rule: Optional[VideoRule],
+) -> List[QCMeasurement]:
+    if video_rule is None:
+        return []
+    known = {m.id: m.value for m in measurements}
+    out: List[QCMeasurement] = []
+    want_flashes = bool(video_rule.check_photosensitivity)
+    want_cuts = video_rule.expected_cuts is not None
+    if want_flashes or want_cuts:
+        out += analyze_temporal(
+            ctx.capabilities.ffmpeg_path, input_path, stream_index,
+            frame_rate=known.get("video.frame_rate"),
+            color_transfer=known.get("video.color_transfer"),
+            want_flashes=want_flashes, want_cuts=want_cuts,
+            flash_area_fraction=params["flash_area_fraction"],
+            scene_cut_threshold=params["scene_cut_threshold"],
+        ).measurements
+    if video_rule.text_regions:
+        out += analyze_text_regions(
+            ctx.capabilities.ffmpeg_path, input_path, stream_index, video_rule.text_regions,
+            frame_width=known.get("video.width"), frame_height=known.get("video.height"),
+        ).measurements
+    return out
 
 
 def _gather_audio_measurements(
@@ -353,7 +395,7 @@ def run_report(request: Request, ctx: ExecutionContext) -> Dict[str, Any]:
     video_duration_sec = None
 
     if request.kind == "video":
-        measurements = _gather_video_measurements(ctx, input_path, effective_parameters, size_bytes)
+        measurements = _gather_video_measurements(ctx, input_path, effective_parameters, size_bytes, request.video_rule)
         duration_m = next((m for m in measurements if m.id == "container.duration_sec"), None)
         video_duration_sec = duration_m.value if duration_m else None
     elif request.kind == "audio":
@@ -373,7 +415,8 @@ def run_report(request: Request, ctx: ExecutionContext) -> Dict[str, Any]:
         v = video_streams(fmt_probe)
         a = audio_streams(fmt_probe)
         if v:
-            measurements += _gather_video_measurements(ctx, input_path, effective_parameters, size_bytes)
+            delivery_video_rule = request.delivery_rule.video if request.delivery_rule is not None else None
+            measurements += _gather_video_measurements(ctx, input_path, effective_parameters, size_bytes, delivery_video_rule)
         else:
             measurements += measure_video_streams(fmt_probe)
         if a:
@@ -553,7 +596,10 @@ def _run_delivery_package(request: Request, ctx: ExecutionContext) -> Dict[str, 
                 )
             )
             if artifact.artifact_type == "video":
-                own += _gather_video_measurements(ctx, path, effective_parameters, sizes[aid])
+                artifact_rule = rule_by_id.get(aid)
+                own += _gather_video_measurements(
+                    ctx, path, effective_parameters, sizes[aid], artifact_rule.video if artifact_rule is not None else None
+                )
             elif artifact.artifact_type == "audio":
                 own += _gather_audio_measurements(ctx, path, effective_parameters, sizes[aid])
             elif artifact.artifact_type == "subtitle":

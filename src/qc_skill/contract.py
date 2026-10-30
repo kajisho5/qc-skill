@@ -27,6 +27,7 @@ from .rules import (
     DeliveryRule,
     SourceCue,
     SubtitleRule,
+    TextRegion,
     TimelineIntegrityRule,
     TimelineSegment,
     VideoRule,
@@ -43,6 +44,9 @@ SUPPORTED_VIDEO_MEASUREMENTS = [
     "video.color_range", "video.color_space", "video.color_transfer", "video.color_primaries", "video.field_order",
     "video.black_segments", "video.freeze_segments", "video.luminance_excursions", "video.decoded_frame_count",
     "video.decode_error_count", "video.decode_errors", "video.frame_count_delta",
+    # opt-in, only when a VideoRule asks for them (ADR-016/017/018)
+    "video.flash_per_second", "video.flash_worst_window", "video.red_flash_count",
+    "video.scene_cuts", "video.text_regions",
 ]
 
 SUPPORTED_AUDIO_MEASUREMENTS = [
@@ -78,6 +82,7 @@ SUPPORTED_CHECKS = [
     "video.color_transfer_matches_expected", "video.color_primaries_matches_expected",
     "video.black_frames_within_tolerance", "video.freeze_frames_within_tolerance",
     "video.luminance_within_legal_range",
+    "video.photosensitive_flash_within_limit", "video.cuts_match_expected", "video.text_legible",
     "audio.stream_present_matches_expected", "audio.decodes_without_errors", "audio.no_clipping",
     "audio.sample_rate_matches_expected", "audio.channels_match_expected", "audio.channel_layout_matches_expected",
     "audio.leading_silence_within_tolerance", "audio.trailing_silence_within_tolerance",
@@ -124,6 +129,9 @@ FINDING_CATALOG = [
     ("VIDEO_BLACK_FRAMES_EXCEEDED", "FAIL"),
     ("VIDEO_FREEZE_EXCEEDED", "FAIL"),
     ("VIDEO_LUMINANCE_OUT_OF_RANGE", "FAIL"),
+    ("VIDEO_FLASH_RISK", "FAIL"),
+    ("VIDEO_CUT_MISMATCH", "FAIL"),
+    ("TEXT_ILLEGIBLE", "FAIL"),
     ("AUDIO_STREAM_MISSING", "FAIL"),
     ("AUDIO_STREAM_UNEXPECTED", "FAIL"),
     ("AUDIO_DECODE_ERROR", "FAIL"),
@@ -230,6 +238,12 @@ UNGROUPED_CHECKS = [
     "video.duration_within_limit",
     "video.resolution_meets_minimum",
     "video.frame_rate_is_constant",
+    # ADR-016/017/018: CAPABILITY_MATRIX.md assigns no id for photosensitivity,
+    # planned-cut accuracy or text legibility yet (measure.video.scene_detection is
+    # media-analysis-skill's raw cut *detector*, not a cut-list comparison).
+    "video.photosensitive_flash_within_limit",
+    "video.cuts_match_expected",
+    "video.text_legible",
 ]
 
 
@@ -238,7 +252,7 @@ def capability_provides() -> list:
             for cap_id, checks in sorted(CAPABILITY_CHECK_GROUPS.items())]
 
 
-_CATEGORY_PREFIXES = {"VIDEO": "video", "AUDIO": "audio", "SUBTITLE": "subtitle", "DELIVERY": "delivery"}
+_CATEGORY_PREFIXES = {"TEXT": "video", "VIDEO": "video", "AUDIO": "audio", "SUBTITLE": "subtitle", "DELIVERY": "delivery"}
 
 
 def _finding_category(code: str) -> str:
@@ -267,6 +281,7 @@ _NESTED_RULE_NAMES = {
     TimelineIntegrityRule: "timeline_integrity",
     TimelineSegment: "timeline_segment",
     SourceCue: "timeline_source_cue",
+    TextRegion: "text_region",
 }
 
 
@@ -308,6 +323,7 @@ def rules_contract_schema() -> Dict[str, Any]:
         "timeline_integrity": _rule_schema(TimelineIntegrityRule),
         "timeline_segment": _rule_schema(TimelineSegment),
         "timeline_source_cue": _rule_schema(SourceCue),
+        "text_region": _rule_schema(TextRegion),
     }
 
 
@@ -342,7 +358,8 @@ def skill_contract() -> Dict[str, Any]:
         "provides": capability_provides(),
         "capabilities": {
             "required": ["ffprobe"],
-            "optional": ["ffmpeg", "filter:blackdetect", "filter:freezedetect", "filter:ebur128", "filter:astats", "filter:silencedetect"],
+            "optional": ["ffmpeg", "filter:blackdetect", "filter:freezedetect", "filter:ebur128", "filter:astats", "filter:silencedetect",
+                         "filter:scdet", "filter:extractplanes", "filter:showinfo", "filter:crop"],
         },
         "inputs": {
             "input": "media or subtitle file path (one primary artifact per request; not accepted for kind=delivery_package)",
@@ -357,6 +374,7 @@ def skill_contract() -> Dict[str, Any]:
                 "luminance_legal_min", "luminance_legal_max",
                 "silence_threshold_db", "silence_min_duration_sec", "clipping_threshold_dbfs",
                 "max_line_length", "max_cue_duration_sec", "max_gap_sec",
+                "flash_area_fraction", "scene_cut_threshold",
             }
         ),
         "measurements": {
