@@ -13,7 +13,7 @@ v0.1.3, Python 3.9+ stdlib. contract, doctor, run (inspect/check/validate; video
 
 | Owned job | Status | Note |
 |---|---|---|
-| 規格判定(QC) | done | VMAF/SSIM/PSNR and its own receipt still open (docs/qc-evolution-gap-analysis.md) |
+| 規格判定(QC) | done | VMAF/SSIM/PSNR added (step 3); its own receipt still open (docs/qc-evolution-gap-analysis.md) |
 
 ## Wiring
 
@@ -25,7 +25,7 @@ Agent wires qc/check and qc/inspect (ADR-032); provides[] publishes only qc/run 
   - Done when: 0.01 s timeout test
 - [ ] **2. Per-operation tool_ids in provides** — qc/check, qc/inspect (keep qc/run alias)
   - Done when: no tool-id drift in agent diagnostics
-- [ ] **3. Reference metrics** — opt-in VMAF/SSIM/PSNR, UNKNOWN without libvmaf
+- [x] **3. Reference metrics** — opt-in VMAF/SSIM/PSNR, UNKNOWN without libvmaf (`reference_metrics` + `reference_video`; size scaled, fps/length mismatch refused; ADR-021) ([#23](https://github.com/kajisho5/qc-skill/pull/23))
   - Done when: identical input PASS, degraded FAIL
 - [ ] **4. (agent side) delivery_package gate** — video + subtitles + thumbnail checked together
   - Done when: missing sidecar = FAIL, not promoted
