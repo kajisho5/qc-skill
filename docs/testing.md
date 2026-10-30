@@ -28,6 +28,11 @@ exactly (e.g. `clean.mp4` is defined as 320x240 @25fps, 100 frames, mono
 | `subtitle_valid.srt` | well-formed cues aligned to `clean.mp4`'s duration |
 | `subtitle_mismatch.srt` | ends far short of the reference video's duration |
 | `subtitle_malformed.srt` | backwards timestamp, duplicate id, empty cue |
+| `flash_10hz.mp4`, `flash_2hz.mp4` | full-screen white/black flashing at 10 Hz (BT.1702 FAIL) / 2 Hz (PASS), 20 fps |
+| `flash_small_area.mp4`, `flash_half_area.mp4` | 10 Hz flash over 9% (PASS) / 50% (FAIL) of the screen |
+| `flash_dim.mp4`, `flash_bright_only.mp4` | ~1 cd/m2 swing (no change) / darker side ~179 cd/m2 (no SDR flash) |
+| `cuts.mp4` | four flat shots, cuts at frames 25/60/90 of 25 fps (1.0/2.4/3.6 s) |
+| `text_boxes.mp4` | 640x360 drawbox "glyph" bars: white 40 px, #2A2A2A 40 px (low contrast), white 6 px |
 
 ## Test matrix
 

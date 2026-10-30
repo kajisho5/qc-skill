@@ -50,6 +50,20 @@ one the caller supplies. See `docs/checks.md`.
 legal 8-bit range (default 16-235) via ffmpeg's `signalstats` (a literal
 per-frame pixel readout, not a heuristic classifier). See `docs/checks.md`.
 
+Three opt-in `VideoRule` checks (each measured only when asked, ADR-016/017/018):
+
+- `check_photosensitivity: true` - ITU-R BT.1702 general flash (20 cd/m2
+  changes, darker side < 160 cd/m2, > 25% of the screen, more than
+  `max_flashes_per_second` (default 3) in any 1 s) -> `VIDEO_FLASH_RISK`.
+  Red flash is not defined by the standard and is reported UNKNOWN.
+- `expected_cuts: [seconds]` - compares scdet cut times with your cut
+  list (`max_cut_error_frames` default 1, `allow_extra_cuts` default
+  true) -> `VIDEO_CUT_MISMATCH`, with matched/missing/extra in evidence.
+- `text_regions: [{t, box: [x, y, w, h], role: hook|cta|caption|term}]` -
+  WCAG contrast ratio (`min_contrast_ratio` default 4.5) and ink height
+  at a 1080 px short side (`min_text_height_px` per role, no default)
+  -> `TEXT_ILLEGIBLE`. Measured facts only; no OCR.
+
 ## Example
 
 ```json

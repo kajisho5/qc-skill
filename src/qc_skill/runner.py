@@ -41,6 +41,7 @@ class ProcessResult:
     stderr: str
     seconds: float
     timed_out: bool = False
+    stdout_bytes: bytes = b""
 
 
 def _clean_env() -> dict:
@@ -72,7 +73,13 @@ def _kill_group(proc: subprocess.Popen) -> None:
         pass
 
 
-def run_argv(argv: List[str], timeout: Optional[float] = None) -> ProcessResult:
+def run_argv(argv: List[str], timeout: Optional[float] = None, *, binary_stdout: bool = False) -> ProcessResult:
+    """``binary_stdout=True`` keeps stdout as raw bytes (``stdout_bytes``;
+    ``stdout`` is then empty) - for the rawvideo frame readouts in
+    measurements/temporal.py and measurements/text_legibility.py, which
+    must never be decoded as text.
+    """
+
     for arg in argv:
         if not isinstance(arg, str):
             raise error("INTERNAL_ERROR", "non-string argv element", argv=argv)
@@ -99,10 +106,11 @@ def run_argv(argv: List[str], timeout: Optional[float] = None) -> ProcessResult:
     return ProcessResult(
         argv=argv,
         returncode=proc.returncode if not timed_out else -1,
-        stdout=stdout.decode("utf-8", errors="replace"),
+        stdout="" if binary_stdout else stdout.decode("utf-8", errors="replace"),
         stderr=stderr.decode("utf-8", errors="replace"),
         seconds=time.monotonic() - start,
         timed_out=timed_out,
+        stdout_bytes=stdout if binary_stdout else b"",
     )
 
 
@@ -149,4 +157,38 @@ def ffmpeg_analysis_argv(
         flag = "-af" if audio else "-vf"
         argv.extend([flag, ",".join(filters)])
     argv.extend(["-f", "null", "-"])
+    return argv
+
+
+def ffmpeg_rawvideo_argv(
+    executable: str,
+    input_path: Path,
+    filters: List[str],
+    *,
+    stream_select: str,
+    pix_fmt: Optional[str],
+    seek_sec: Optional[float] = None,
+    max_frames: Optional[int] = None,
+    log_level: str = "info",
+) -> List[str]:
+    """Build a fixed 'decode, filter, write raw frames to stdout' ffmpeg
+    invocation (``pix_fmt=None`` writes nothing: ``-f null``).
+
+    Like ``ffmpeg_analysis_argv``, ``filters`` are internally constructed
+    expressions whose only caller-derived parts are numbers that
+    schemas.py has already validated as numbers - never caller text.
+    """
+
+    argv = [executable, "-hide_banner", "-nostdin", "-v", log_level, "-protocol_whitelist", "file"]
+    if seek_sec is not None:
+        argv.extend(["-ss", f"{seek_sec:.6f}"])
+    argv.extend(["-i", str(input_path), "-map", stream_select])
+    if max_frames is not None:
+        argv.extend(["-frames:v", str(int(max_frames))])
+    if filters:
+        argv.extend(["-vf", ",".join(filters)])
+    if pix_fmt is None:
+        argv.extend(["-f", "null", "-"])
+    else:
+        argv.extend(["-f", "rawvideo", "-pix_fmt", pix_fmt, "-"])
     return argv

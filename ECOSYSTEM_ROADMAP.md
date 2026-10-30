@@ -5,7 +5,7 @@ Written from a read-only audit of this repository on 2026-10-30. Each step below
 
 ## Where it stands
 
-v0.1.3, Python 3.9+ stdlib. contract, doctor, run (inspect/check/validate; video/audio/subtitle/delivery/delivery_package; 50 checks). 22 test modules, CI on 3 OSes x 2 Pythons. Already an OS registry fixture.
+v0.1.3, Python 3.9+ stdlib. contract, doctor, run (inspect/check/validate; video/audio/subtitle/delivery/delivery_package; 53 checks after steps 5-7). 22 test modules, CI on 3 OSes x 2 Pythons. Already an OS registry fixture.
 
 ## What this repository owns
 
@@ -29,6 +29,12 @@ Agent wires qc/check and qc/inspect (ADR-032); provides[] publishes only qc/run 
   - Done when: identical input PASS, degraded FAIL
 - [ ] **4. (agent side) delivery_package gate** — video + subtitles + thumbnail checked together
   - Done when: missing sidecar = FAIL, not promoted
+- [x] **5. Photosensitive flash check (ITU-R BT.1702)** — opt-in `check_photosensitivity`, `max_flashes_per_second` (default 3) → `VIDEO_FLASH_RISK`; red flash UNKNOWN (ADR-016)
+  - Done when: 10 Hz full-screen flash FAIL, 2 Hz PASS, small-area flash PASS
+- [x] **6. Planned-cut accuracy** — `expected_cuts` vs. scdet cut times, `max_cut_error_frames`/`allow_extra_cuts` → `VIDEO_CUT_MISMATCH` (ADR-017)
+  - Done when: exact list PASS, 2-frame error / missing cut FAIL; agent can verify a render against its IR cut list
+- [x] **7. Text legibility** — `text_regions` contrast (WCAG, default 4.5) and per-role ink height at 1080 → `TEXT_ILLEGIBLE`, no OCR (ADR-018)
+  - Done when: low-contrast and undersized regions FAIL, box outside frame UNKNOWN
 
 ## Boundaries
 

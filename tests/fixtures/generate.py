@@ -200,4 +200,59 @@ def build_all(out_dir: Path) -> Dict[str, Path]:
     for name in ("_black_a.mp4", "_black_b.mp4"):
         (out_dir / name).unlink(missing_ok=True)
 
+    _build_visual_qc_fixtures(out_dir, paths)
     return paths
+
+
+def _geq_clip(path: Path, *, size: str, rate: int, duration: int, lum: str) -> None:
+    """A gray-only clip whose luma is an exact per-pixel/per-frame
+    expression (``geq``; N = frame index, X/Y = pixel position)."""
+
+    _run(
+        "-f", "lavfi", "-i", f"color=c=black:s={size}:r={rate}:d={duration},geq=lum='{lum}':cb=128:cr=128",
+        "-c:v", "libx264", "-crf", "1", "-pix_fmt", "yuv420p", str(path),
+    )
+
+
+def _build_visual_qc_fixtures(out_dir: Path, paths: Dict[str, Path]) -> None:
+    """ADR-016/017/018 fixtures. Y=235 / Y=16 are limited-range white /
+    black (200 / 0 cd/m2 under BT.1702's SDR mapping)."""
+
+    # Photosensitive flash (20 fps, 3 s, 160x90). Alternating every frame
+    # = 10 Hz (20 luminance changes, 10 flashes per second).
+    flash_cases = {
+        "flash_10hz": "if(lt(mod(N,2),1),235,16)",                       # full screen, 10 Hz -> FAIL
+        "flash_2hz": "if(lt(mod(N,10),5),235,16)",                       # full screen, 2 Hz -> PASS
+        "flash_small_area": "if(lt(X,48)*lt(Y,27)*lt(mod(N,2),1),235,16)",  # 9% of the screen, 10 Hz -> PASS
+        "flash_half_area": "if(lt(X,80)*lt(mod(N,2),1),235,16)",          # 50% of the screen, 10 Hz -> FAIL
+        "flash_dim": "if(lt(mod(N,2),1),40,16)",                          # ~1 cd/m2 swing (< 20) -> PASS
+        "flash_bright_only": "if(lt(mod(N,2),1),235,225)",                # darker side ~179 cd/m2 (>= 160) -> PASS
+    }
+    for name, lum in flash_cases.items():
+        path = out_dir / f"{name}.mp4"
+        _geq_clip(path, size="160x90", rate=20, duration=3, lum=lum)
+        paths[name] = path
+
+    # Planned cuts: 25 fps, 4 s, four flat shots with cuts at frames 25,
+    # 60, 90 (= 1.0 s, 2.4 s, 3.6 s).
+    cuts = out_dir / "cuts.mp4"
+    _geq_clip(cuts, size="160x90", rate=25, duration=4, lum="if(lt(N,25),40,if(lt(N,60),200,if(lt(N,90),90,160)))")
+    paths["cuts"] = cuts
+
+    # Text legibility: 640x360 (short side 360 -> x3 to 1080), 2 s, on a
+    # #202020 background. "Glyphs" are drawbox bars so their height is
+    # exact on every platform (no font dependency):
+    #   A box [40,40,200,80]:   white bars, 40 px tall   -> high contrast, 120 px @1080
+    #   B box [320,40,200,80]:  #2A2A2A bars, 40 px tall -> contrast ~1.1:1
+    #   C box [40,220,200,40]:  white bars, 6 px tall    -> 18 px @1080
+    bars = []
+    for i in range(4):
+        bars.append(f"drawbox=x={60 + 30 * i}:y=60:w=8:h=40:color=white:t=fill")
+        bars.append(f"drawbox=x={340 + 30 * i}:y=60:w=8:h=40:color=0x2A2A2A:t=fill")
+        bars.append(f"drawbox=x={60 + 30 * i}:y=236:w=16:h=6:color=white:t=fill")
+    text_boxes = out_dir / "text_boxes.mp4"
+    _run(
+        "-f", "lavfi", "-i", "color=c=0x202020:s=640x360:r=25:d=2",
+        "-vf", ",".join(bars), "-c:v", "libx264", "-crf", "1", "-pix_fmt", "yuv420p", str(text_boxes),
+    )
+    paths["text_boxes"] = text_boxes

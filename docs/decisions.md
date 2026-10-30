@@ -410,3 +410,151 @@ per-track `subtitle_stream_details`, not just standalone SRT/VTT/ASS
 files) was explicitly scoped out: it needs a new probe-style measurement
 path (`measurements/subtitle.py` only ever reads a caption file from
 disk), not a `Rule` field, and is a larger, separate change.
+
+## ADR-016: photosensitive flashes follow ITU-R BT.1702-3, with the display mapping stated as an assumption
+
+Inspiration (ideas only, no code taken): `win4r/video-director`'s
+`video-director/scripts/qa_video.py` (MIT) checks a render for flashes,
+planned cuts and on-screen text size/contrast. qc-skill takes the three
+*questions* and answers each against a named standard or a caller's own
+data, in this repository's measurement/rule/finding idiom.
+
+A flash check is only worth shipping if it follows a published
+definition, not a home-made "frame differs from its neighbours"
+heuristic. The thresholds were taken from the primary source, read
+directly (2026-10-30):
+
+- ITU-R BT.1702-3 (11/2023), *Guidance for the reduction of
+  photosensitive epileptic seizures caused by television*,
+  https://www.itu.int/dms_pubrec/itu-r/rec/bt/R-REC-BT.1702-3-202311-I!!PDF-E.pdf
+  - Guideline 1: a potentially harmful flash is a pair of opposing
+    luminance changes; when the darker image is below 160 cd/m2, a
+    change is a difference of 20 cd/m2 or more (SDR and HDR); when the
+    darker image is not below 160 cd/m2, a Michelson contrast above 1/17
+    applies, **for HDR programmes only**. A sequence is not permitted
+    when *both* the concurrently flashing area exceeds **25% of the
+    displayed screen area** *and* there are **more than three flashes
+    (i.e. six changes) within any one-second period**. Flashes whose
+    leading edges are >= 360 ms (50 Hz) / 334 ms (60 Hz) apart are
+    acceptable irrespective of brightness or area.
+  - "Irrespective of luminance, a transition to or from a saturated red
+    is also potentially harmful" - but no colorimetric definition is
+    given, and Annex 3 says "more explicit definitions and detection
+    criteria will also be required in specifying guidance on the use of
+    saturated red colour".
+  - Note 3 / Annex 2 / Table 1: SDR is assumed displayed with peak white
+    = 200 cd/m2 (HLG 1 000, PQ 10 000); Table 1's SDR column is
+    `200 * V^2.4` (BT.1886, zero black level; e.g. 10-bit code 400 ->
+    20.06 cd/m2, code 863 -> 160.4 cd/m2), `V = (D - 64) / 876` for
+    10-bit, i.e. `(Y - 16) / 219` for 8-bit.
+- The 2005 edition (BT.1702-0,
+  https://www.itu.int/dms_pubrec/itu-r/rec/bt/R-REC-BT.1702-0-200502-I!!PDF-E.pdf)
+  has the same 20 cd/m2 / 160 cd/m2 / 25% / three-flash core.
+- Ofcom's guidance (the legacy ITC note it publishes,
+  https://www.ofcom.org.uk/__data/assets/pdf_file/0021/16248/gn_flash.pdf)
+  uses the same pair of conditions (more than one quarter of the
+  displayed screen area and more than three flashes within any
+  one-second period), which originate in the Harding/Binnie work
+  BT.1702 cites; WCAG 2.x SC 2.3.1
+  (https://www.w3.org/WAI/WCAG20/Understanding/three-flashes-or-below-threshold)
+  cites BT.1702 for the same general-flash definition.
+
+Decisions:
+
+- **Opt-in** (`VideoRule.check_photosensitivity: true`): the analysis
+  needs per-frame, per-area luminance, which the existing single pass
+  (whose stdout already carries `signalstats` metadata) cannot expose
+  without changing every existing request's pass. One extra decode, only
+  when asked; ADR-006 still holds for every request that does not ask.
+- **Display mapping** is BT.1702's own SDR assumption above, stated in
+  the measurement's `notes`, not hidden. HDR transfer (PQ/HLG) is
+  `null`/UNKNOWN: the HLG/PQ curves and the HDR-only Michelson branch are
+  not implemented, and qc-skill does not guess.
+- **Area**: luma is area-averaged by ffmpeg onto a 32x32 grid (each cell
+  1/1024 of the screen); "more than 25%" is evaluated strictly. The
+  25% is a *detection* parameter (`flash_area_fraction`, ADR-005: it
+  defines what counts as a screen flash); `max_flashes_per_second`
+  (default 3, the standard's number) is the policy rule. Averaging code
+  values rather than light is exact for uniform cells and an
+  approximation at edges - documented, not hidden.
+- **Counting**: a per-cell peak/trough tracker records a change once
+  luminance has moved >= 20 cd/m2 back from the running extreme with the
+  darker side < 160 cd/m2; `flashes = changes / 2`, so 7 changes (3.5
+  flashes) already exceeds "more than three". The 360/334 ms clause is
+  a consequence of the same limit, not separately evaluated.
+- **Red flash**: not implemented; `video.red_flash_count` is always
+  `null` with the reason, and the check evidence says
+  `red_flash: UNKNOWN`. It is deliberately *not* a separate check whose
+  status is always UNKNOWN - under worst-wins aggregation (ADR-004) that
+  would turn every report that asks for flash analysis UNKNOWN. A
+  caller that needs a red-flash verdict has none from qc-skill and
+  should say so.
+- Fixtures (`tests/fixtures/generate.py`): full-screen 10 Hz white/black
+  = FAIL (10 flashes), 2 Hz = PASS, a 9%-area 10 Hz flash = PASS, a
+  50%-area 10 Hz flash = FAIL, a ~1 cd/m2 swing = no change, a 179 vs
+  200 cd/m2 swing (darker side >= 160) = no SDR flash.
+
+## ADR-017: planned-cut accuracy compares scdet cut times against the caller's cut list
+
+video-production-agent renders from an IR that already knows where every
+cut is; this check lets it verify the render against that list without
+qc-skill ever constructing the list itself (the ADR-012 stance: consume
+the caller's plan, never compete with it).
+
+- **Measurement**: `video.scene_cuts` from ffmpeg `scdet` (threshold
+  `scene_cut_threshold`, default 10 = scdet's own default, a detection
+  parameter), read from `metadata=print` frame lines - frame index and
+  pts time of the first frame of each new shot. Runs in the same extra
+  decode as ADR-016 when both are requested; only when
+  `VideoRule.expected_cuts` is set.
+- **Rule**: `expected_cuts` (typed list of non-negative seconds, sorted
+  on parse), `max_cut_error_frames` (default 1), `allow_extra_cuts`
+  (default true), `cut_match_window_sec` (default 0.5).
+- **Matching** is a deterministic nearest-unmatched match per expected
+  cut in time order, within the window; the check evidence reports
+  `matched` (with `error_frames = |detected - expected| * fps`),
+  `missing`, `extra` and `max_error_frames`. `VIDEO_CUT_MISMATCH` when
+  anything is missing, the max error exceeds the limit, or an extra cut
+  exists while `allow_extra_cuts` is false.
+- scdet is itself a detector with a threshold: a soft cut or a cut
+  between near-identical shots can go undetected (reported as `missing`,
+  a fact about the detector at that threshold, which the caller can
+  lower), and a flash or a whip-pan can register as an extra cut (hence
+  `allow_extra_cuts` defaults to true).
+
+## ADR-018: text legibility is contrast and ink height at caller-named regions, never OCR
+
+`VideoRule.text_regions: [{t, box: [x, y, w, h], role}]` (`role` in
+`hook|cta|caption|term`) names where the caller put text. For each,
+qc-skill decodes one frame at `t`, crops the box, and measures two
+facts in pure Python:
+
+- **Contrast**: Otsu's threshold on gamma-encoded luma splits the box
+  into two classes (minority = ink); contrast ratio is the WCAG 2.x
+  definition `(L1 + 0.05) / (L2 + 0.05)` on the two classes' *median*
+  relative luminance (sRGB-linearised, 0.2126/0.7152/0.0722), per
+  https://www.w3.org/TR/WCAG22/#dfn-contrast-ratio and
+  https://www.w3.org/TR/WCAG22/#dfn-relative-luminance. Medians, not
+  means, so anti-aliased glyph edges do not drag the ink class toward
+  the background. `min_contrast_ratio` defaults to 4.5 (WCAG 2.x AA,
+  SC 1.4.3, normal text); 7.0 is AAA (SC 1.4.6), 3.0 the AA large-text
+  figure - the caller chooses.
+- **Height**: the tallest run of pixel rows containing ink. For
+  all-caps text without descenders this is the cap height; for
+  mixed-case text it includes ascenders/descenders and is an upper bound
+  on cap height. Reported raw and scaled to a 1080 px short side.
+  `min_text_height_px` is per role and has **no default**: no standard
+  gives a pixel floor per role, so qc-skill holds no opinion until the
+  caller supplies one (ADR-005).
+
+`TEXT_ILLEGIBLE` when any region is below a minimum; a region that
+cannot be measured (box outside the frame, no frame at `t`) is
+`measured: false` with a reason, and the check is UNKNOWN unless another
+region already failed. What the text *says* is never read - OCR and
+semantic judgement stay out of scope (`not_provided`).
+
+None of the three new checks joins a `provides` Capability group:
+`CAPABILITY_MATRIX.md` assigns no id for photosensitivity, cut-list
+accuracy or text legibility (`measure.video.scene_detection` is
+media-analysis-skill's raw detector, a different capability), so they
+are listed in `contract.UNGROUPED_CHECKS` like the ADR-014 precedent.
