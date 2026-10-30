@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.2.4 - 2026-10-30
+
+- ci: pin third-party actions by commit SHA (#24) (26c2e82)
+
 ## v0.2.3 - 2026-10-30
 
 - Opt-in VMAF/SSIM/PSNR reference metrics, UNKNOWN without libvmaf (roadmap step 3) (#23) (d84801b)
