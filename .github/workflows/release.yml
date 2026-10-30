@@ -69,7 +69,7 @@ jobs:
         # v7's dry-run resolves the version without writing a draft. The v6 step this replaces ran
         # with `disable-releaser: true`, which skips the drafting that computes resolved_version,
         # so the output was always empty and every push to main failed in "Decide the release".
-        uses: release-drafter/release-drafter@v7
+        uses: release-drafter/release-drafter@978bb0b30c5ee8cdd332ced253758157150d43f0 # v7.10.0
         with:
           config-name: release-drafter.yml
           dry-run: true
@@ -139,7 +139,7 @@ jobs:
 
       - name: Publish to PyPI
         if: steps.decide.outputs.needs_release == 'true' && env.PYPI_API_TOKEN != ''
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
         with:
           password: ${{ env.PYPI_API_TOKEN }}
 
