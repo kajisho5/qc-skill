@@ -142,6 +142,51 @@ check evidence lists `matched` (`{expected, detected, error_frames}`),
 (detection parameter, default 10 = scdet's own default) sets scdet's
 sensitivity.
 
+### Opt-in full-reference metrics: VMAF, SSIM, PSNR (ADR-021)
+
+Measured **only when a `VideoRule` sets `reference_metrics`** (any of
+`"vmaf"`, `"ssim"`, `"psnr"`) on `kind: video` or `kind: delivery`
+(`rules.delivery.video`); the reference is the request's top-level
+`reference_video`, path-checked and fingerprinted like `input` (its
+fingerprint joins the report identity and `provenance.reference_video_input`).
+Without the rule, `reference_video` stays ignored for these kinds and
+nothing changes. One extra ffmpeg run decodes both files and feeds the
+pair to `libvmaf`/`ssim`/`psnr` together.
+
+**Measurements** (`src/qc_skill/measurements/reference.py`):
+
+| id | source | notes |
+|---|---|---|
+| `video.reference_alignment` | ffprobe of both files | `{status: "aligned", compared_size, scaled_distorted_to, pix_fmt, frame_rate, frame_rule, distorted, reference[, psnr_capped]}` or `{status: "refused", code, reason, distorted, reference}`; `null` when no `reference_video` was given |
+| `video.vmaf` | ffmpeg `libvmaf` | pooled mean, libvmaf's default model (vmaf_v0.6.1 in libvmaf 2.x); `null` when this ffmpeg has no libvmaf |
+| `video.ssim` | ffmpeg `ssim` | `All` mean SSIM (0-1) |
+| `video.psnr_db` | ffmpeg `psnr` | `average` PSNR in dB; a bit-identical pair (infinite PSNR) is reported as libvmaf's PSNR ceiling: 60 dB at 8 bit, 72 dB at 10 bit, with `psnr_capped: true` in the alignment |
+
+Alignment rule: both streams are re-timed to start at 0 and compared
+frame by frame up to the shorter one. Frame rates must agree within
+0.01 fps and frame counts within one frame (durations within one frame
+when a count is missing) - otherwise the comparison is **refused**
+(`FRAME_RATE_MISMATCH`, `FRAME_COUNT_MISMATCH`, `DURATION_MISMATCH`,
+`FRAME_RATE_UNKNOWN`, `LENGTH_UNKNOWN`, `REFERENCE_NO_VIDEO`,
+`DISTORTED_NO_VIDEO`), every requested score is `null` and every check is
+`UNKNOWN` with that reason. A different **size** is not refused: the
+distorted picture is scaled (bicubic) to the reference's size first, as
+the VMAF FAQ prescribes. Both sides are converted to the reference's
+pixel format when libvmaf accepts it (planar YUV 4:2:0/4:2:2/4:4:4,
+8/10 bit), else `yuv420p`.
+
+**Policy checks** (defaults apply only once `reference_metrics` opts in):
+
+| check_id | rule field(s) | finding |
+|---|---|---|
+| `video.vmaf_meets_minimum` | `reference_metrics` includes `"vmaf"`, `min_vmaf` (default 93 - Rassool, *VMAF Reproducibility*, RealNetworks 2017: about 93 = "indistinguishable from original or with noticeable but not annoying distortion") | `VIDEO_VMAF_BELOW_MINIMUM`; `UNKNOWN` (reason names libvmaf) when this ffmpeg has no libvmaf filter - see `qc doctor` `filter:libvmaf` |
+| `video.ssim_meets_minimum` | `"ssim"`, `min_ssim` (default 0.95 - the SSIM-to-MOS mapping of Zinner et al. 2010, as tabulated in Moldovan et al. 2014 Table I: >= 0.95 = MOS 4 "Good") | `VIDEO_SSIM_BELOW_MINIMUM` |
+| `video.psnr_meets_minimum` | `"psnr"`, `min_psnr_db` (default 31 - the PSNR-to-MOS mapping of Ke et al. 2008, Moldovan et al. 2014 Table I: >= 31 dB = MOS 4 "Good") | `VIDEO_PSNR_BELOW_MINIMUM` |
+
+A refused alignment, a missing `reference_video` or a missing libvmaf is
+`UNKNOWN`, never `PASS` or `FAIL`; a missing libvmaf does not stop SSIM
+and PSNR from running.
+
 ## Audio (`kind: "audio"`, and `kind: "delivery"` when an audio stream is present)
 
 **Measurements** (`src/qc_skill/measurements/audio.py`):

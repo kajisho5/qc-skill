@@ -42,7 +42,12 @@ jobs:
       - name: Lint (pyflakes)
         run: python -m pyflakes src/qc_skill
 
+      # ADR-021: the Homebrew and gyan.dev (Chocolatey) ffmpeg builds ship libvmaf, so the real
+      # VMAF tests must run there (a missing libvmaf fails instead of skipping). Ubuntu's apt ffmpeg
+      # is built without libvmaf: there the real "VMAF is UNKNOWN, SSIM/PSNR still run" path is tested.
       - name: Run tests
+        env:
+          QC_REQUIRE_LIBVMAF: ${{ runner.os != 'Linux' && '1' || '0' }}
         run: python -m pytest -q
 
       - name: doctor --json

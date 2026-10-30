@@ -18,6 +18,7 @@ from pathlib import Path
 from qc_skill import contract as contract_module
 from qc_skill import rules as rules_module
 from qc_skill.measurements import audio as audio_module
+from qc_skill.measurements import reference as reference_module
 from qc_skill.measurements import subtitle as subtitle_module
 from qc_skill.measurements import temporal as temporal_module
 from qc_skill.measurements import text_legibility as text_legibility_module
@@ -58,7 +59,7 @@ def _actual_check_ids() -> set:
 
 def _actual_measurement_ids() -> set:
     ids = set()
-    for module in (video_module, audio_module, subtitle_module, temporal_module, text_legibility_module, engine_module):
+    for module in (video_module, audio_module, subtitle_module, temporal_module, text_legibility_module, reference_module, engine_module):
         src = _source_of(module)
         ids |= set(_MEASUREMENT_ID_LITERAL_RE.findall(src))
         ids |= set(_MEASUREMENT_ID_KW_RE.findall(src))

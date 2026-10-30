@@ -627,3 +627,120 @@ the contract's tool specs, `doctor --json` and every report's
   unchanged (`contract_version` stays `"1"`). `skill_version` is part of a
   report's identity, so reports cached under the old `0.1.0` label are
   recomputed rather than reused.
+
+## ADR-021: full-reference metrics (VMAF/SSIM/PSNR) are opt-in, compare against `request.reference_video`, refuse misaligned pairs, and are UNKNOWN without libvmaf
+
+Roadmap step 3 (`ECOSYSTEM_ROADMAP.md`); the Phase 5 gap in
+`docs/qc-evolution-gap-analysis.md`. A render can only be scored against
+its master if the caller says which master - so the whole feature is
+opt-in, and every default request behaves exactly as before.
+
+- **Opt-in and where the reference comes from.** `VideoRule.reference_metrics`
+  (a list of `"vmaf"`, `"ssim"`, `"psnr"`) switches it on, for
+  `kind: video` and for `kind: delivery`'s `rules.delivery.video`. The
+  reference file is the existing top-level `reference_video` key (until
+  now used only by `kind: subtitle`), not a path inside the rule: paths
+  stay out of rules (`rules.py`), and the top-level key already goes
+  through `PathPolicy.resolve_input`, is fingerprinted into the report
+  identity and shows in `provenance.reference_video_input`. For
+  `kind: video`/`delivery` it is read **only** when the rule opts in, so
+  a request that sent `reference_video` before keeps the same identity and
+  report. `kind: delivery_package` has no per-artifact reference path; a
+  `reference_metrics` rule there is UNKNOWN ("no request.reference_video").
+  The new rule fields are a `List[str]` and three `float`s - within the
+  typed-rule grammar `video-production-agent`'s qc adapter accepts
+  (`List[scalar|NamedRule]`, `Dict[str, scalar]`, scalars).
+- **Computation.** One extra ffmpeg run with both files as inputs and one
+  internally built `-filter_complex` (fixed filter names, ffprobe
+  integers, an allow-listed pixel format - never caller text): each side
+  `setpts=PTS-STARTPTS`, the pair split into `libvmaf`, `ssim`, `psnr`,
+  each with `shortest=1`, output to `-f null`. Scores are the filters'
+  own summary lines (libvmaf "VMAF score", ssim "All", psnr "average").
+  libvmaf runs with its default model (vmaf_v0.6.1 in libvmaf 2.x); the
+  model is not selectable, because a model path would be a caller-supplied
+  file the filter loads.
+- **Size mismatch: scale, by a documented rule.** The VMAF FAQ
+  (https://github.com/Netflix/vmaf/blob/master/resource/doc/faq.md, read
+  2026-10-30): with a 1080 reference and a 480 encode, "the right way to
+  do it is to upsample the 480 video to 1080, and calculate the VMAF at
+  1080, together with its 1080 source". qc-skill scales the distorted
+  picture to the reference's size (bicubic) for all three metrics and
+  records `scaled_distorted_to`. Pixel formats are unified to the
+  reference's when libvmaf accepts it (planar YUV 4:2:0/4:2:2/4:4:4,
+  8/10 bit), else `yuv420p`.
+- **Frame-rate / length mismatch: refuse, structured.** These metrics pair
+  frame N with frame N; at different rates or with a trimmed clip they
+  measure the misalignment, not the encode, and there is no rule-free way
+  to retime or find an offset. So frame rates must agree within 0.01 fps
+  (the tolerance `video.variable_frame_rate_suspected` already uses) and
+  frame counts within one frame (durations within one frame when a count
+  is missing). Otherwise `video.reference_alignment` is
+  `{status: "refused", code, reason, distorted, reference}` with `code` in
+  `FRAME_RATE_MISMATCH | FRAME_COUNT_MISMATCH | DURATION_MISMATCH |
+  FRAME_RATE_UNKNOWN | LENGTH_UNKNOWN | REFERENCE_NO_VIDEO |
+  DISTORTED_NO_VIDEO`, the scores are `null`, and each requested check is
+  UNKNOWN with that code in its `reason` and the record in its evidence.
+  *Not chosen: a request-level error.* An `INVALID_INPUT` failure would
+  throw away every other check in the same report (format, black frames,
+  loudness) for a problem that concerns one opt-in comparison, would turn a
+  property of the media into an execution failure (README: errors are for
+  execution problems), and would add nothing a caller cannot read from the
+  structured record; ADR-004 already guarantees an UNKNOWN check keeps the
+  report from aggregating to PASS.
+- **libvmaf availability.** `capabilities.detect_capabilities` matches
+  exact filter names in `ffmpeg -filters` (a substring test would take
+  `libvmaf_cuda` for `libvmaf`) and reads `ffmpeg -buildconf` for
+  `--enable-libvmaf`. `doctor --json` reports `filter:libvmaf` (with
+  `buildconf_enable_libvmaf`), `filter:ssim`, `filter:psnr` as optional:
+  their absence lists the matching check under `unavailable_tools` but
+  never makes doctor `degraded`. Without libvmaf, `"vmaf"` is not run and
+  `video.vmaf_meets_minimum` is UNKNOWN with the reason; SSIM and PSNR
+  still run. A libvmaf that is listed but fails at run time (e.g. a build
+  without its model) is retried once without it, so it never takes SSIM
+  and PSNR down with it.
+- **Infinite PSNR.** A bit-identical pair has infinite PSNR, which the
+  canonical JSON used for identity/cache (`allow_nan=False`) cannot carry.
+  It is reported as libvmaf's own PSNR ceiling for the bit depth (60 dB at
+  8 bit, 72 dB at 10 bit - libvmaf `psnr_max`), with `psnr_capped: true`.
+  Finite values are reported as ffmpeg prints them.
+- **Thresholds.** These are policy, and ADR-005 says policy has no default;
+  as with `max_flashes_per_second` (ADR-016) and `min_contrast_ratio`
+  (ADR-018), the defaults below apply only once the caller has opted in,
+  and each comes from a published source rather than from qc-skill:
+  - `min_vmaf = 93`: R. Rassool, "VMAF Reproducibility: Validating a
+    Perceptual Practical Video Quality Metric", RealNetworks, 2017
+    (https://realnetworks.com/sites/default/files/vmaf_reproducibility_ieee.pdf,
+    read 2026-10-30), conclusion (c): "if a video service operator were to
+    encode video to achieve a VMAF score of about 93 then they would be
+    confident of optimally serving the vast majority of their audience
+    with content that is either indistinguishable from original or with
+    noticeable but not annoying distortion". (Netflix's own FAQ gives no
+    threshold and warns that absolute scores are not comparable across
+    resolutions; Netflix has described ~6 VMAF points as one just
+    noticeable difference.)
+  - `min_ssim = 0.95` and `min_psnr_db = 31`: the lower bound of MOS 4
+    ("Good") in A.-N. Moldovan, I. Ghergulescu, C. H. Muntean, "A Novel
+    Methodology for Mapping Objective Video Quality Metrics to the
+    Subjective MOS Scale", IEEE BMSB 2014, Table I
+    (https://norma.ncirl.ie/1298/1/Moldovan_et_al._-_2014_-_A_Novel_Methodology_for_Mapping_Objective_Video_Qu.pdf,
+    read 2026-10-30), which tabulates the
+    SSIM mapping of T. Zinner et al., "Towards QoE Management for Scalable
+    Video Streaming", ITC Specialist Seminar 2010 (>= 0.99 excellent,
+    >= 0.95 good, >= 0.88 fair) and the PSNR mapping of C.-H. Ke et al.,
+    "An Evaluation Framework for More Realistic Simulations of MPEG Video
+    Transmission", JISE 24(2), 2008 (> 37 dB excellent, 31-37 good, 25-31
+    fair). Zinner et al.'s own PSNR mapping puts "good" at 33 dB - the
+    caller who prefers it sets `min_psnr_db: 33`.
+- **Capability grouping.** `CAPABILITY_MATRIX.md` assigns no id for
+  full-reference quality metrics, so the three checks are in
+  `contract.UNGROUPED_CHECKS` (ADR-014 precedent).
+- **Tests and CI.** `tests/test_reference_metrics.py` generates a master,
+  a crushed copy (boxblur + crf 51), a half-size copy, a 30 fps clip and a
+  truncated clip with ffmpeg: identical = SSIM 1.0 / PSNR 60 (capped) /
+  VMAF >= 93 PASS, crushed = FAIL at the defaults and PASS at lowered
+  thresholds, half size = scaled and scored, 30 fps and truncated =
+  refused/UNKNOWN. The missing-libvmaf path is tested by simulation
+  everywhere, and for real on any runner whose ffmpeg lacks libvmaf; the
+  real VMAF scores are tested where the runner's ffmpeg has libvmaf, and
+  `QC_REQUIRE_LIBVMAF=1` turns a skip into a failure on the CI job(s)
+  known to have it.

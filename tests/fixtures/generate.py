@@ -201,6 +201,7 @@ def build_all(out_dir: Path) -> Dict[str, Path]:
         (out_dir / name).unlink(missing_ok=True)
 
     _build_visual_qc_fixtures(out_dir, paths)
+    _build_reference_fixtures(out_dir, paths)
     return paths
 
 
@@ -256,3 +257,39 @@ def _build_visual_qc_fixtures(out_dir: Path, paths: Dict[str, Path]) -> None:
         "-vf", ",".join(bars), "-c:v", "libx264", "-crf", "1", "-pix_fmt", "yuv420p", str(text_boxes),
     )
     paths["text_boxes"] = text_boxes
+
+
+def _build_reference_fixtures(out_dir: Path, paths: Dict[str, Path]) -> None:
+    """ADR-021 fixtures: a near-lossless 320x240 @25fps, 2 s master and
+    distorted versions of it."""
+
+    master = out_dir / "ref_master.mp4"
+    _run(
+        "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=25:duration=2",
+        "-c:v", "libx264", "-crf", "1", "-pix_fmt", "yuv420p", str(master),
+    )
+    paths["ref_master"] = master
+
+    # Same frames, crushed by the encoder (crf 51) and blurred: SSIM ~0.8,
+    # PSNR ~25 dB - far below the 0.95 / 31 dB / VMAF 93 defaults.
+    degraded = out_dir / "ref_degraded.mp4"
+    _run("-i", str(master), "-vf", "boxblur=2:1", "-c:v", "libx264", "-crf", "51", "-pix_fmt", "yuv420p", str(degraded))
+    paths["ref_degraded"] = degraded
+
+    # Same frames at half size: compared after a bicubic upscale to 320x240.
+    small = out_dir / "ref_small.mp4"
+    _run("-i", str(master), "-vf", "scale=160:120", "-c:v", "libx264", "-crf", "18", "-pix_fmt", "yuv420p", str(small))
+    paths["ref_small"] = small
+
+    # 30 fps instead of 25: refused (FRAME_RATE_MISMATCH).
+    fps30 = out_dir / "ref_30fps.mp4"
+    _run(
+        "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=30:duration=2",
+        "-c:v", "libx264", "-crf", "1", "-pix_fmt", "yuv420p", str(fps30),
+    )
+    paths["ref_30fps"] = fps30
+
+    # First second only (25 of 50 frames): refused (FRAME_COUNT_MISMATCH).
+    short = out_dir / "ref_short.mp4"
+    _run("-i", str(master), "-frames:v", "25", "-c:v", "libx264", "-crf", "1", "-pix_fmt", "yuv420p", str(short))
+    paths["ref_short"] = short

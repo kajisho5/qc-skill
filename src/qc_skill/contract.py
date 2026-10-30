@@ -15,7 +15,7 @@ import sys
 from typing import Any, Dict
 
 from . import CONTRACT_VERSION, PACKAGE_NAME, SKILL_ID, VERSION
-from .capabilities import REQUIRED_FILTERS, detect_capabilities
+from .capabilities import REFERENCE_METRIC_FILTERS, REQUIRED_FILTERS, detect_capabilities
 from .errors import ERROR_CODES
 from .rules import (
     ArtifactDependencyRule,
@@ -47,6 +47,8 @@ SUPPORTED_VIDEO_MEASUREMENTS = [
     # opt-in, only when a VideoRule asks for them (ADR-016/017/018)
     "video.flash_per_second", "video.flash_worst_window", "video.red_flash_count",
     "video.scene_cuts", "video.text_regions",
+    # opt-in, only when VideoRule.reference_metrics is set (ADR-021)
+    "video.reference_alignment", "video.vmaf", "video.ssim", "video.psnr_db",
 ]
 
 SUPPORTED_AUDIO_MEASUREMENTS = [
@@ -83,6 +85,7 @@ SUPPORTED_CHECKS = [
     "video.black_frames_within_tolerance", "video.freeze_frames_within_tolerance",
     "video.luminance_within_legal_range",
     "video.photosensitive_flash_within_limit", "video.cuts_match_expected", "video.text_legible",
+    "video.vmaf_meets_minimum", "video.ssim_meets_minimum", "video.psnr_meets_minimum",
     "audio.stream_present_matches_expected", "audio.decodes_without_errors", "audio.no_clipping",
     "audio.sample_rate_matches_expected", "audio.channels_match_expected", "audio.channel_layout_matches_expected",
     "audio.leading_silence_within_tolerance", "audio.trailing_silence_within_tolerance",
@@ -132,6 +135,9 @@ FINDING_CATALOG = [
     ("VIDEO_FLASH_RISK", "FAIL"),
     ("VIDEO_CUT_MISMATCH", "FAIL"),
     ("TEXT_ILLEGIBLE", "FAIL"),
+    ("VIDEO_VMAF_BELOW_MINIMUM", "FAIL"),
+    ("VIDEO_SSIM_BELOW_MINIMUM", "FAIL"),
+    ("VIDEO_PSNR_BELOW_MINIMUM", "FAIL"),
     ("AUDIO_STREAM_MISSING", "FAIL"),
     ("AUDIO_STREAM_UNEXPECTED", "FAIL"),
     ("AUDIO_DECODE_ERROR", "FAIL"),
@@ -244,6 +250,11 @@ UNGROUPED_CHECKS = [
     "video.photosensitive_flash_within_limit",
     "video.cuts_match_expected",
     "video.text_legible",
+    # ADR-021: no Capability id for full-reference quality metrics exists in
+    # CAPABILITY_MATRIX.md yet.
+    "video.vmaf_meets_minimum",
+    "video.ssim_meets_minimum",
+    "video.psnr_meets_minimum",
 ]
 
 
@@ -359,12 +370,17 @@ def skill_contract() -> Dict[str, Any]:
         "capabilities": {
             "required": ["ffprobe"],
             "optional": ["ffmpeg", "filter:blackdetect", "filter:freezedetect", "filter:ebur128", "filter:astats", "filter:silencedetect",
-                         "filter:scdet", "filter:extractplanes", "filter:showinfo", "filter:crop"],
+                         "filter:scdet", "filter:extractplanes", "filter:showinfo", "filter:crop",
+                         "filter:libvmaf", "filter:ssim", "filter:psnr"],
         },
         "inputs": {
             "input": "media or subtitle file path (one primary artifact per request; not accepted for kind=delivery_package)",
             "subtitle": "companion subtitle file path (kind=delivery only)",
-            "reference_video": "companion video file path, for duration comparison (kind=subtitle only)",
+            "reference_video": (
+                "companion video file path: for kind=subtitle, the duration comparison; for kind=video/delivery, "
+                "the reference that VideoRule.reference_metrics (VMAF/SSIM/PSNR) compares against - read only when "
+                "that rule is set"
+            ),
             "artifacts": "list of {artifact_id, artifact_type, path} - N named artifacts validated together (kind=delivery_package only, required and non-empty for it)",
         },
         "outputs": ["report"],
@@ -450,6 +466,20 @@ def doctor_report(path_policy_workspace: str) -> Dict[str, Any]:
         status = {"available": "AVAILABLE", "missing": "MISSING", "unknown": "UNKNOWN"}[state]
         checks[f"filter:{name}"] = {"status": status}
 
+    # Optional full-reference metric filters (ADR-021): reported, never a
+    # reason for "degraded" - only an opt-in reference_metrics rule needs them.
+    for name in REFERENCE_METRIC_FILTERS:
+        state = caps.filters.get(name, "unknown")
+        entry: Dict[str, Any] = {"status": {"available": "AVAILABLE", "missing": "MISSING", "unknown": "UNKNOWN"}[state], "optional": True}
+        if name == "libvmaf":
+            entry["buildconf_enable_libvmaf"] = caps.buildconf_libvmaf
+            if state != "available":
+                entry["detail"] = (
+                    "ffmpeg -filters does not list libvmaf (an ffmpeg built without --enable-libvmaf): "
+                    "VideoRule.reference_metrics 'vmaf' is reported UNKNOWN; 'ssim'/'psnr' still run"
+                )
+        checks[f"filter:{name}"] = entry
+
     try:
         contract = skill_contract()
         json.dumps(contract)  # round-trip: every value must be JSON-serializable
@@ -467,6 +497,12 @@ def doctor_report(path_policy_workspace: str) -> Dict[str, Any]:
         unavailable_tools.append("video.black_frames_within_tolerance")
         unavailable_tools.append("video.freeze_frames_within_tolerance")
         unavailable_tools.append("audio.no_clipping")
+    if not caps.filter_available("libvmaf"):
+        unavailable_tools.append("video.vmaf_meets_minimum")
+    if not caps.filter_available("ssim"):
+        unavailable_tools.append("video.ssim_meets_minimum")
+    if not caps.filter_available("psnr"):
+        unavailable_tools.append("video.psnr_meets_minimum")
 
     problems = []
     if not caps.ffprobe_available:
@@ -476,7 +512,7 @@ def doctor_report(path_policy_workspace: str) -> Dict[str, Any]:
 
     if not caps.ffprobe_available or not contract_ok:
         status = "fail"
-    elif not caps.ffmpeg_available or any(v == "unknown" for v in caps.filters.values()):
+    elif not caps.ffmpeg_available or any(caps.filters.get(n) == "unknown" for n in REQUIRED_FILTERS):
         status = "degraded"
     else:
         status = "ok"

@@ -80,6 +80,10 @@ def _equality_check(
 
 TEXT_ROLES = ("hook", "cta", "caption", "term")
 
+# Full-reference metrics a VideoRule can opt into (ADR-021), in the
+# canonical order they are evaluated and reported in.
+REFERENCE_METRICS = ("vmaf", "ssim", "psnr")
+
 
 @dataclass
 class TextRegion:
@@ -129,6 +133,11 @@ class VideoRule:
     text_regions: Optional[List[TextRegion]] = None
     min_contrast_ratio: float = 4.5  # WCAG 2.x AA, normal text (7.0 = AAA)
     min_text_height_px: Optional[Dict[str, float]] = None  # per role, at a 1080 px short side; None = no opinion
+    # --- full-reference metrics against request.reference_video (ADR-021) ---
+    reference_metrics: Optional[List[str]] = None  # opt-in: any of REFERENCE_METRICS; runs one extra two-input decode
+    min_vmaf: float = 93.0  # Rassool 2017 (RealNetworks), "VMAF Reproducibility": ~93 = indistinguishable or not annoying
+    min_ssim: float = 0.95  # Zinner et al. 2010 SSIM->MOS mapping (Moldovan et al. 2014, Table I): >= 0.95 = 4 (Good)
+    min_psnr_db: float = 31.0  # Ke et al. 2008 PSNR->MOS mapping (Moldovan et al. 2014, Table I): >= 31 dB = 4 (Good)
 
 
 def evaluate_video(
@@ -463,6 +472,10 @@ def evaluate_video(
     if rule.text_regions:
         _evaluate_text_regions(checks, findings, measurements, rule)
 
+    # --- policy: full-reference metrics (ADR-021) ---
+    if rule.reference_metrics:
+        _evaluate_reference_metrics(checks, findings, measurements, rule)
+
     return checks, findings
 
 
@@ -590,6 +603,64 @@ def _evaluate_text_regions(checks: List[QCCheck], findings: List[QCFinding], mea
         findings.append(f)
         check.finding_codes.append(f.code)
     checks.append(check)
+
+
+def _reference_metric_check(
+    checks: List[QCCheck],
+    findings: List[QCFinding],
+    measurements: MeasurementMap,
+    *,
+    check_id: str,
+    measurement_id: str,
+    minimum: float,
+    code: str,
+    label: str,
+) -> None:
+    """One full-reference score against its minimum (ADR-021). An
+    unmeasured score (libvmaf missing, reference refused, no reference) is
+    UNKNOWN with the measurement's own reason - never PASS, never FAIL."""
+
+    ids = [measurement_id, "video.reference_alignment"]
+    alignment = _val(measurements, "video.reference_alignment")
+    value = _val(measurements, measurement_id)
+    if value is None:
+        m = measurements.get(measurement_id)
+        reason = m.notes if m is not None and m.notes else f"{label} could not be measured"
+        check = _unknown_check(check_id, "video", reason, ids)
+        check.evidence = {"minimum": minimum, "alignment": alignment}
+        checks.append(check)
+        return
+    status = QCStatus.PASS if value >= minimum else QCStatus.FAIL
+    evidence = {"value": value, "minimum": minimum, "alignment": alignment}
+    check = QCCheck(check_id, "video", status, ids, evidence=evidence)
+    if status == QCStatus.FAIL:
+        f = QCFinding(
+            code, FindingSeverity.FAIL,
+            f"{label} {value} against the reference is below the minimum {minimum}",
+            evidence=evidence, measurement_ids=ids,
+        )
+        findings.append(f)
+        check.finding_codes.append(f.code)
+    checks.append(check)
+
+
+def _evaluate_reference_metrics(checks: List[QCCheck], findings: List[QCFinding], measurements: MeasurementMap, rule: VideoRule) -> None:
+    wanted = set(rule.reference_metrics or [])
+    if "vmaf" in wanted:
+        _reference_metric_check(
+            checks, findings, measurements, check_id="video.vmaf_meets_minimum", measurement_id="video.vmaf",
+            minimum=rule.min_vmaf, code="VIDEO_VMAF_BELOW_MINIMUM", label="VMAF",
+        )
+    if "ssim" in wanted:
+        _reference_metric_check(
+            checks, findings, measurements, check_id="video.ssim_meets_minimum", measurement_id="video.ssim",
+            minimum=rule.min_ssim, code="VIDEO_SSIM_BELOW_MINIMUM", label="SSIM",
+        )
+    if "psnr" in wanted:
+        _reference_metric_check(
+            checks, findings, measurements, check_id="video.psnr_meets_minimum", measurement_id="video.psnr_db",
+            minimum=rule.min_psnr_db, code="VIDEO_PSNR_BELOW_MINIMUM", label="PSNR (dB)",
+        )
 
 
 # ---------------------------------------------------------------------------
