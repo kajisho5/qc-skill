@@ -27,7 +27,7 @@ Agent wires qc/check and qc/inspect (ADR-032); provides[] publishes qc/check as 
   - Done when: no tool-id drift in agent diagnostics
 - [x] **3. Reference metrics** — opt-in VMAF/SSIM/PSNR, UNKNOWN without libvmaf (`reference_metrics` + `reference_video`; size scaled, fps/length mismatch refused; ADR-021) ([#23](https://github.com/kajisho5/qc-skill/pull/23))
   - Done when: identical input PASS, degraded FAIL
-- [ ] **4. (agent side) delivery_package gate** — video + subtitles + thumbnail checked together
+- [x] **4. (agent side) delivery_package gate** — video + subtitles + thumbnail checked together (video-production-agent [#82](https://github.com/kajisho5/video-production-agent/pull/82), ADR-065)
   - Done when: missing sidecar = FAIL, not promoted
 - [x] **5. Photosensitive flash check (ITU-R BT.1702)** — opt-in `check_photosensitivity`, `max_flashes_per_second` (default 3) → `VIDEO_FLASH_RISK`; red flash UNKNOWN (ADR-016)
   - Done when: 10 Hz full-screen flash FAIL, 2 Hz PASS, small-area flash PASS
