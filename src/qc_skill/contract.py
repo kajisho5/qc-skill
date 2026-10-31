@@ -258,8 +258,49 @@ UNGROUPED_CHECKS = [
 ]
 
 
+# Per-operation tool ids (ADR-022). The CLI has one subcommand (`qc run`) and the
+# operation is a request field, but consumers address operations, not the subcommand:
+# video-production-agent registers `qc/check` and `qc/inspect` and translates each to
+# the request's `operation`. Publishing the same ids here lets a registry join a
+# Capability to the tool it calls by string equality. `qc/run` stays as an alias for
+# consumers that pinned it; it names the subcommand, which accepts every operation.
+TOOL_CHECK = f"{SKILL_ID}/check"
+TOOL_INSPECT = f"{SKILL_ID}/inspect"
+TOOL_RUN_ALIAS = f"{SKILL_ID}/run"
+
+TOOLS = [
+    {
+        "tool_id": TOOL_CHECK,
+        "operations": ["check", "validate"],
+        "description": "measure one artifact (or one delivery_package) and evaluate caller-supplied rules; "
+                       "PASS/WARN/FAIL/UNKNOWN per check ('validate' is the same pipeline)",
+        "produces": ["measurements", "checks", "findings"],
+    },
+    {
+        "tool_id": TOOL_INSPECT,
+        "operations": ["inspect"],
+        "description": "measure one artifact without rules: measurements only, no checks or findings",
+        "produces": ["measurements"],
+    },
+    {
+        "tool_id": TOOL_RUN_ALIAS,
+        "operations": list(SUPPORTED_OPERATIONS),
+        "alias": True,
+        "description": "the `qc run` subcommand itself, which takes any operation in the request; kept as an "
+                       "alias so a consumer pinned to the pre-ADR-022 provides[] tool id keeps resolving",
+        "produces": ["measurements", "checks", "findings"],
+    },
+]
+
+
 def capability_provides() -> list:
-    return [{"id": cap_id, "lifecycle": "EXPERIMENTAL", "tool_id": f"{SKILL_ID}/run", "checks": sorted(checks)}
+    """One entry per Capability id. `tool_id` is the operation that judges the group's
+    checks (`qc/check`); `tool_ids` lists every per-operation tool that serves the
+    Capability (`qc/inspect` returns the same measurements without a verdict);
+    `alias_tool_ids` keeps `qc/run` resolvable (ADR-022)."""
+    return [{"id": cap_id, "lifecycle": "EXPERIMENTAL", "tool_id": TOOL_CHECK,
+             "tool_ids": [TOOL_CHECK, TOOL_INSPECT], "alias_tool_ids": [TOOL_RUN_ALIAS],
+             "checks": sorted(checks)}
             for cap_id, checks in sorted(CAPABILITY_CHECK_GROUPS.items())]
 
 
@@ -366,6 +407,7 @@ def skill_contract() -> Dict[str, Any]:
         "not_provided": NOT_PROVIDED,
         "operations": SUPPORTED_OPERATIONS,
         "kinds": SUPPORTED_KINDS,
+        "tools": TOOLS,
         "provides": capability_provides(),
         "capabilities": {
             "required": ["ffprobe"],

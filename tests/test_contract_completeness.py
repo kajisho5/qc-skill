@@ -202,7 +202,34 @@ def test_capability_provides_shape():
     assert ids == sorted(ids)
     assert len(ids) == len(set(ids))
     for entry in provides:
-        assert entry.keys() == {"id", "lifecycle", "tool_id", "checks"}
+        assert entry.keys() == {"id", "lifecycle", "tool_id", "tool_ids", "alias_tool_ids", "checks"}
         assert entry["lifecycle"] == "EXPERIMENTAL"
-        assert entry["tool_id"] == "qc/run"
+        assert entry["tool_id"] == "qc/check"
+        assert entry["tool_ids"] == ["qc/check", "qc/inspect"]
+        assert entry["alias_tool_ids"] == ["qc/run"]
         assert entry["checks"] == sorted(entry["checks"])
+
+
+def test_every_provides_tool_id_is_a_published_tool():
+    """ADR-022: provides[] only names tool ids the contract's own `tools` list defines,
+    and every non-alias operation tool appears in provides[]."""
+    doc = contract_module.skill_contract()
+    tools = {t["tool_id"]: t for t in doc["tools"]}
+    for entry in doc["provides"]:
+        for tid in [entry["tool_id"], *entry["tool_ids"], *entry["alias_tool_ids"]]:
+            assert tid in tools, tid
+        assert not tools[entry["tool_id"]].get("alias")
+        assert all(tools[a].get("alias") for a in entry["alias_tool_ids"])
+    referenced = {tid for e in doc["provides"] for tid in e["tool_ids"]}
+    assert referenced == {tid for tid, t in tools.items() if not t.get("alias")}
+
+
+def test_tools_cover_every_operation_exactly_once_plus_the_run_alias():
+    doc = contract_module.skill_contract()
+    non_alias = [op for t in doc["tools"] if not t.get("alias") for op in t["operations"]]
+    assert sorted(non_alias) == sorted(doc["operations"])
+    aliases = [t for t in doc["tools"] if t.get("alias")]
+    assert [t["tool_id"] for t in aliases] == ["qc/run"]
+    assert aliases[0]["operations"] == doc["operations"]
+    by_op = {op: t["tool_id"] for t in doc["tools"] if not t.get("alias") for op in t["operations"]}
+    assert by_op == {"check": "qc/check", "validate": "qc/check", "inspect": "qc/inspect"}

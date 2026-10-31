@@ -170,6 +170,14 @@ two unrelated things that happen to share a name. See
 `docs/decisions.md` ADR-009 for the full check-to-id mapping and the one
 check (`audio.sample_rate_matches_expected`) deliberately left ungrouped.
 
+Each `provides[]` entry names the tool that judges it, `tool_id: "qc/check"`,
+plus every per-operation tool that serves it (`tool_ids: ["qc/check",
+"qc/inspect"]`) and the old id as an alias (`alias_tool_ids: ["qc/run"]`).
+`contract["tools"]` maps each tool id to its operations: `qc/check` =
+`check`/`validate`, `qc/inspect` = `inspect`, `qc/run` = the `qc run`
+subcommand itself (alias, every operation). The request is unchanged: the
+operation is still the request's `operation` field (ADR-022).
+
 ## Measurement vs. Rule vs. Finding
 
 ```

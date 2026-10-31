@@ -744,3 +744,46 @@ opt-in, and every default request behaves exactly as before.
   real VMAF scores are tested where the runner's ffmpeg has libvmaf, and
   `QC_REQUIRE_LIBVMAF=1` turns a skip into a failure on the CI job(s)
   known to have it.
+
+## ADR-022: `provides[]` names per-operation tool ids (`qc/check`, `qc/inspect`); `qc/run` stays as an alias
+
+`provides[]` (ADR-014) gave every Capability one tool id, `qc/run`, the name
+of the CLI subcommand. video-production-agent never used that id: its
+adapter (`tools/qc/adapter.py`, its ADR-032) registers `qc/check` and
+`qc/inspect` and translates each to the request's `operation` field, and
+its production SkillSpec `qc_check` references `qc/check`. Its provides
+diagnostic (`video_agent/skills/diagnostics.py`) joins on tool-id string,
+so all ten Capabilities came back `PROVIDES_MISMATCH` and `qc/check` came
+back `UNKNOWN` ("not published under provides[]"). AI-video-production-OS
+`DECISION_LOG.md` (D9) had read this as expected granularity and decided
+"no fix"; its later ecosystem roadmap (this repository's
+`ECOSYSTEM_ROADMAP.md` step 2) asks for the fix here instead, because the
+agent's split is the one consumers actually address, and only the Skill
+can publish ids every consumer can join on.
+
+- **Contract `tools`.** A new top-level list names one tool per
+  operation: `qc/check` (operations `check` and `validate`, which README
+  documents as the same pipeline), `qc/inspect` (`inspect`), and
+  `qc/run` with `alias: true` (every operation: it is the subcommand).
+  Each non-alias operation maps to exactly one tool
+  (`tests/test_contract_completeness.py`).
+- **`provides[]` entry shape.** `tool_id` is now `qc/check`: every entry
+  is a group of *checks*, and only `check` evaluates them. `tool_ids`
+  lists every per-operation tool that serves the Capability
+  (`["qc/check", "qc/inspect"]`: inspect returns the same measurements
+  without a verdict). `alias_tool_ids: ["qc/run"]` keeps the old id
+  resolvable for any consumer that pinned it. `tool_id` stays a single
+  string because that is the `{id, tool_id, lifecycle}` shape every
+  consumer already reads; the two lists are additive.
+- **Not chosen: one provides[] entry per (Capability, tool) pair.** It
+  would publish each Capability id twice; registries key on the id
+  (AI-video-production-OS `registry/`), and the agent's diagnostic would
+  then also report `qc/inspect` as `CAPABILITY_UNCONSUMED` ten times
+  while no SkillSpec calls it.
+- **No request change.** `qc run` still takes `operation` in the request;
+  the tool ids are names for consumers to join on, not new commands.
+- **Result.** Run against the agent's own `check_provides()` (read-only),
+  the live contract goes from 10 `PROVIDES_MISMATCH` + 1 `UNKNOWN` to 10
+  `PROVIDES_VALID`. `provides` and `tools` are not in the agent's pinned
+  drift keys, so its availability gate is unaffected, but its pinned
+  `contract_*.json` snapshot must be re-pinned to carry the new fields.
