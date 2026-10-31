@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.2.5 - 2026-10-31
+
+- Per-operation tool ids in provides: qc/check, qc/inspect, qc/run alias (roadmap step 2) (#25) (be038d6)
+
 ## v0.2.4 - 2026-10-30
 
 - ci: pin third-party actions by commit SHA (#24) (26c2e82)
