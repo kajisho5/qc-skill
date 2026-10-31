@@ -17,13 +17,13 @@ v0.1.3, Python 3.9+ stdlib. contract, doctor, run (inspect/check/validate; video
 
 ## Wiring
 
-Agent wires qc/check and qc/inspect (ADR-032); provides[] publishes only qc/run (tool-id mismatch). delivery_package never used. Calls ffprobe/ffmpeg directly.
+Agent wires qc/check and qc/inspect (ADR-032); provides[] publishes qc/check as tool_id, qc/check + qc/inspect as tool_ids and qc/run as an alias (step 2, ADR-022). delivery_package never used. Calls ffprobe/ffmpeg directly.
 
 ## Steps
 
 - [x] **1. Enforce request.timeout** — kill the process group, TIMEOUT error (exit 15, retryable; ADR-019) ([#21](https://github.com/kajisho5/qc-skill/pull/21))
   - Done when: 0.01 s timeout test
-- [ ] **2. Per-operation tool_ids in provides** — qc/check, qc/inspect (keep qc/run alias)
+- [x] **2. Per-operation tool_ids in provides** — qc/check, qc/inspect (keep qc/run alias; contract `tools`, ADR-022) (PR_LINK)
   - Done when: no tool-id drift in agent diagnostics
 - [x] **3. Reference metrics** — opt-in VMAF/SSIM/PSNR, UNKNOWN without libvmaf (`reference_metrics` + `reference_video`; size scaled, fps/length mismatch refused; ADR-021) ([#23](https://github.com/kajisho5/qc-skill/pull/23))
   - Done when: identical input PASS, degraded FAIL
