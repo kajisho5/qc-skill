@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.2.6 - 2026-10-31
+
+- Tick roadmap step 4 (agent side done in video-production-agent #82) (#26) (2e02ee0)
+
 ## v0.2.5 - 2026-10-31
 
 - Per-operation tool ids in provides: qc/check, qc/inspect, qc/run alias (roadmap step 2) (#25) (be038d6)
