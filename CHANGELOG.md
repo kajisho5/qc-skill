@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.0.0 - 2026-11-05
+
+- chore(deps): Bump release-drafter/release-drafter from 6.4.0 to 7.10.0 (97bcf2a)
+
 ## v0.2.6 - 2026-10-31
 
 - Tick roadmap step 4 (agent side done in video-production-agent #82) (#26) (2e02ee0)
