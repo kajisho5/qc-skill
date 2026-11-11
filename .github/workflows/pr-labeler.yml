@@ -49,9 +49,10 @@ jobs:
             }
 
       - name: Autolabel PR from title/files
-        uses: release-drafter/release-drafter@978bb0b30c5ee8cdd332ced253758157150d43f0 # v7.10.0
+        # v7's separate autolabeler action: in v7 the main action only drafts releases, no longer applies
+        # labels and has no `disable-releaser` input, so this job failed on every pull request since #27.
+        uses: release-drafter/release-drafter/autolabeler@978bb0b30c5ee8cdd332ced253758157150d43f0 # v7.10.0
         with:
           config-name: release-drafter.yml
-          disable-releaser: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
