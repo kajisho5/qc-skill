@@ -327,3 +327,19 @@ def test_parse_request_rejects_negative_tolerance_sec():
     with pytest.raises(QCError) as exc:
         parse_request(doc)
     assert exc.value.code == "INVALID_REQUEST"
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+@pytest.mark.parametrize("rules", [
+    lambda v: {"video": {"stinger": {"cut_point": v}}},
+    lambda v: {"video": {"stinger": {"cut_point": 0.5, "file": "s.mov", "cut_at": [v], "max_cut_frame_difference": 2}}},
+    lambda v: {"audio": {"loop_seam": {"window_sec": 1.0, "max_level_diff_db": v}}},
+    lambda v: {"audio": {"loop_seam": {"seams": [v]}}},
+    lambda v: {"video": {"expected_cuts": [v]}},
+])
+def test_parse_request_rejects_non_finite_rule_numbers(value, rules):
+    # json.loads accepts NaN / Infinity; they must not reach a measurement or the identity hash
+    with pytest.raises(QCError) as exc:
+        parse_request(base_doc(operation="check", rules=rules(value)))
+    assert exc.value.code == "INVALID_REQUEST"
+    assert "finite" in exc.value.message

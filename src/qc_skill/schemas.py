@@ -9,6 +9,7 @@ environment override through the request (STEP 15).
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -150,6 +151,8 @@ def _build_rule(cls, data: Optional[Dict[str, Any]]):
 def _number(value: Any, *, field_name: str, allow_negative: bool = True) -> float:
     if not isinstance(value, (int, float)) or isinstance(value, bool):
         raise error("INVALID_REQUEST", f"{field_name} must be a number")
+    if not math.isfinite(value):  # JSON decoders accept NaN / Infinity; no rule field means them
+        raise error("INVALID_REQUEST", f"{field_name} must be a finite number")
     if not allow_negative and value < 0:
         raise error("INVALID_REQUEST", f"{field_name} must not be negative")
     return float(value)
