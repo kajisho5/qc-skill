@@ -329,6 +329,9 @@ tolerant of older and newer files:
   engine timing; a boolean `interpolated`, `timing_interpolated` or
   `estimated` set to `true` counts as interpolated too;
 - a segment with `words: null` contributes no words;
+- a transcript with no usable word at all (e.g. one made without word
+  timestamps) counts as unreadable, so the speech checks are `UNKNOWN`
+  instead of passing on zero words;
 - a word without text, or without numeric finite `start`/`end` with
   `end >= start`, is skipped and counted.
 

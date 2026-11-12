@@ -1334,15 +1334,20 @@ def assign_words_to_cues(cues: List[Dict[str, Any]], words: List[Dict[str, Any]]
     order."""
 
     starts = [c["start"] for c in cues]
+    # latest end among cues[0..j]: once it is <= mid, no earlier cue can contain mid
+    reach: List[float] = []
+    for cue in cues:
+        reach.append(max(reach[-1], cue["end"]) if reach else cue["end"])
     out: Dict[int, List[Dict[str, Any]]] = {c["index"]: [] for c in cues}
     for word in words:
         mid = (word["start"] + word["end"]) / 2.0
-        i = bisect_right(starts, mid) - 1
-        for j in range(i, max(-1, i - 8), -1):
+        j = bisect_right(starts, mid) - 1
+        while j >= 0 and reach[j] > mid:
             cue = cues[j]
             if cue["start"] <= mid < cue["end"]:
                 out[cue["index"]].append(word)
                 break
+            j -= 1
     for cue_words in out.values():
         cue_words.sort(key=lambda w: w["position"])
     return out

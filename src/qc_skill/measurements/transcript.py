@@ -25,7 +25,10 @@ the file, and reads them tolerantly:
   top-level JSON list is read as a list of segments (or of words).
 
 A word without usable timing (missing, non-numeric, non-finite, or end
-before start) or without text is skipped and counted, never repaired.
+before start) or without text is skipped and counted, never repaired. A
+transcript with no usable word at all (for example one made without word
+timestamps) is reported as unreadable, so the speech checks are UNKNOWN
+rather than passing on zero words.
 """
 
 from __future__ import annotations
@@ -124,6 +127,13 @@ def read_transcript(path: Path) -> TranscriptReadResult:
                 or any(entry.get(flag) is True for flag in _INTERPOLATION_FLAGS)
             ),
         })
+    if not result.words:
+        # e.g. a transcript made without word timestamps: segments but no words.
+        # Zero words would make every speech check pass vacuously.
+        result.error = (
+            f"transcript has no usable word timings ({len(entries)} word entr(y/ies), "
+            f"{result.skipped_word_count} skipped)"
+        )
     return result
 
 

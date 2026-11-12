@@ -141,7 +141,13 @@ def test_bom_is_accepted(tmp_path):
     assert read_transcript(path).error is None
 
 
-@pytest.mark.parametrize("content", ["{not json", json.dumps({"text": "no words here"})])
+@pytest.mark.parametrize("content", [
+    "{not json",
+    json.dumps({"text": "no words here"}),
+    # segments without word timestamps: zero usable words must not pass vacuously
+    json.dumps({"segments": [{"text": "Hello world", "start": 1.0, "end": 2.0}]}),
+    json.dumps({"words": [{"text": "Hello", "start": 1.0}]}),
+])
 def test_unreadable_transcript_makes_speech_checks_unknown(tmp_path, content):
     srt = _write_srt(tmp_path / "subs.srt", [(1.0, 2.0, "Hello world")])
     tpath = tmp_path / "t.json"
@@ -158,6 +164,16 @@ def test_unreadable_transcript_makes_speech_checks_unknown(tmp_path, content):
 
 
 # --- subtitle.cue_boundaries_on_word_boundaries ------------------------------
+
+
+def test_word_inside_a_long_overlapping_cue_is_assigned_to_it(tmp_path):
+    # a 60 s cue overlapped by ten short ones: a word between two short cues belongs to the long one
+    cues = [(0.0, 60.0, "Hello world")] + [(1.0 + i * 2.0, 1.5 + i * 2.0, f"x{i}") for i in range(10)]
+    words = [("Hello", 21.6, 21.8), ("world", 21.8, 21.9)]
+    checks, _ = _evaluate(tmp_path, cues, words, max_cue_lead_sec=100.0, allow_overlapping_cues=True)
+    check = checks["subtitle.cue_not_early"]
+    assert check.status == QCStatus.PASS
+    assert check.evidence["cues_without_speech"] == 10
 
 
 def test_boundaries_between_words_pass(tmp_path):
