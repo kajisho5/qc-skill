@@ -115,6 +115,20 @@ and `cover` from the stinger's stinger.json:
   the stinger's covered frame, mean |RGB| 0-255;
   `VIDEO_STINGER_CUT_FRAME_MISMATCH`).
 
+One opt-in loop-seam check for audio (ADR-025), any `AudioRule`:
+
+- `loop_seam: {include_wrap (default true), seams?: [seconds], window_sec?,
+  max_click_ratio?, max_level_diff_db?, max_band_diff_db?}` measures the
+  wrap (end -> start) and each listed seam: a click ratio (second
+  difference at the seam over its 99th percentile around it) ->
+  `audio.loop_seam_click_within_limit` (`AUDIO_LOOP_SEAM_CLICK`), the RMS
+  step between `window_sec` on each side ->
+  `audio.loop_seam_level_within_limit` (`AUDIO_LOOP_SEAM_LEVEL_MISMATCH`),
+  and the octave-band shape difference ->
+  `audio.loop_seam_spectrum_within_limit`
+  (`AUDIO_LOOP_SEAM_SPECTRUM_MISMATCH`). No limit has a default; a seam
+  whose windows do not fit, or audio that cannot be decoded, is UNKNOWN.
+
 ## Example
 
 ```json

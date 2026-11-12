@@ -22,6 +22,7 @@ from .rules import (
     DeliveryArtifactRule,
     DeliveryPackageRule,
     DeliveryRule,
+    LoopSeamRule,
     POS_TAGS,
     REFERENCE_METRICS,
     SUBTITLE_PRESETS,
@@ -128,6 +129,8 @@ def _build_rule(cls, data: Optional[Dict[str, Any]]):
     kwargs = dict(data)
     if cls is VideoRule:
         _validate_video_rule_fields(kwargs)
+    if cls is AudioRule and kwargs.get("loop_seam") is not None:
+        kwargs["loop_seam"] = _build_loop_seam_rule(kwargs["loop_seam"])
     if cls is SubtitleRule:
         _validate_subtitle_rule_fields(kwargs)
     if "video" in kwargs and kwargs["video"] is not None:
@@ -294,6 +297,45 @@ def _validate_video_rule_fields(kwargs: Dict[str, Any]) -> None:
             role: _number(v, field_name=f"VideoRule.min_text_height_px.{role}", allow_negative=False)
             for role, v in sorted(heights.items())
         }
+
+
+def _build_loop_seam_rule(data: Any) -> LoopSeamRule:
+    """ADR-025: ``AudioRule.loop_seam``. Every limit is opt-in with no
+    default; the level and spectrum limits need ``window_sec``."""
+
+    if not isinstance(data, dict):
+        raise error("INVALID_REQUEST", "AudioRule.loop_seam must be an object")
+    allowed = {f for f in LoopSeamRule.__dataclass_fields__}  # type: ignore[attr-defined]
+    unknown = set(data) - allowed
+    if unknown:
+        raise error("INVALID_REQUEST", f"unknown fields for AudioRule.loop_seam: {sorted(unknown)}")
+    kwargs: Dict[str, Any] = {}
+    if data.get("window_sec") is not None:
+        window = _number(data["window_sec"], field_name="AudioRule.loop_seam.window_sec", allow_negative=False)
+        if window <= 0 or window > 60:
+            raise error("INVALID_REQUEST", "AudioRule.loop_seam.window_sec must be greater than 0 and at most 60")
+        kwargs["window_sec"] = window
+    if data.get("seams") is not None:
+        seams = data["seams"]
+        if not isinstance(seams, list):
+            raise error("INVALID_REQUEST", "AudioRule.loop_seam.seams must be a list of seconds")
+        times = sorted(_number(t, field_name="AudioRule.loop_seam.seams[]", allow_negative=False) for t in seams)
+        if len(set(times)) != len(times):
+            raise error("INVALID_REQUEST", "AudioRule.loop_seam.seams has duplicate times")
+        kwargs["seams"] = times
+    if "include_wrap" in data:
+        if not isinstance(data["include_wrap"], bool):
+            raise error("INVALID_REQUEST", "AudioRule.loop_seam.include_wrap must be a boolean")
+        kwargs["include_wrap"] = data["include_wrap"]
+    for name in ("max_click_ratio", "max_level_diff_db", "max_band_diff_db"):
+        if data.get(name) is not None:
+            kwargs[name] = _number(data[name], field_name=f"AudioRule.loop_seam.{name}", allow_negative=False)
+    rule = LoopSeamRule(**kwargs)
+    if not rule.include_wrap and not rule.seams:
+        raise error("INVALID_REQUEST", "AudioRule.loop_seam has no seam to measure: include_wrap is false and seams is empty")
+    if rule.window_sec is None and (rule.max_level_diff_db is not None or rule.max_band_diff_db is not None):
+        raise error("INVALID_REQUEST", "AudioRule.loop_seam.max_level_diff_db / max_band_diff_db need window_sec (no default)")
+    return rule
 
 
 def _build_covered_interval(item: Any) -> CoveredInterval:

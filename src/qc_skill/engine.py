@@ -20,6 +20,7 @@ from .canonical import sha256_file, stable_hash
 from .capabilities import CapabilitySet
 from .errors import error
 from .measurements.audio import analyze_audio, measure_audio_streams
+from .measurements.loop_seam import analyze_loop_seams, not_performed as loop_seam_not_performed
 from .measurements.reference import analyze_reference_metrics, not_performed as reference_not_performed
 from .measurements.stinger import analyze_stinger, not_performed as stinger_not_performed
 from .measurements.subtitle import measure_subtitle
@@ -237,8 +238,12 @@ def _gather_opt_in_video_measurements(
 
 
 def _gather_audio_measurements(
-    ctx: ExecutionContext, input_path: Path, params: Dict[str, Any], size_bytes: int
+    ctx: ExecutionContext, input_path: Path, params: Dict[str, Any], size_bytes: int,
+    audio_rule: Optional[AudioRule] = None,
 ) -> List[QCMeasurement]:
+    """``audio_rule`` only decides whether the opt-in loop-seam decode
+    (ADR-025) runs; every other measurement is rule-independent."""
+
     probe_data = probe_media(ctx.capabilities.ffprobe_path, input_path)
     measurements = measure_container(probe_data, actual_size_bytes=size_bytes)
     measurements += measure_audio_streams(probe_data)
@@ -256,6 +261,11 @@ def _gather_audio_measurements(
             clipping_threshold_db=params["clipping_threshold_dbfs"],
         )
         measurements += result.measurements
+        if audio_rule is not None and audio_rule.loop_seam is not None:
+            measurements += analyze_loop_seams(
+                ctx.capabilities.ffmpeg_path, input_path, a_streams[0], audio_rule.loop_seam,
+                duration_sec=duration_m.value if duration_m else None,
+            )
     elif a_streams:
         measurements.append(
             QCMeasurement(
@@ -263,6 +273,8 @@ def _gather_audio_measurements(
                 source="ffmpeg:decode", notes="not performed: ffmpeg is not available",
             )
         )
+        if audio_rule is not None and audio_rule.loop_seam is not None:
+            measurements += loop_seam_not_performed("ffmpeg is not available")
     return measurements
 
 
@@ -554,7 +566,7 @@ def _run_report(request: Request, ctx: ExecutionContext) -> Dict[str, Any]:
         duration_m = next((m for m in measurements if m.id == "container.duration_sec"), None)
         video_duration_sec = duration_m.value if duration_m else None
     elif request.kind == "audio":
-        measurements = _gather_audio_measurements(ctx, input_path, effective_parameters, size_bytes)
+        measurements = _gather_audio_measurements(ctx, input_path, effective_parameters, size_bytes, request.audio_rule)
     elif request.kind == "subtitle":
         ref_duration = None
         if reference_video_path is not None:
@@ -577,7 +589,8 @@ def _run_report(request: Request, ctx: ExecutionContext) -> Dict[str, Any]:
         else:
             measurements += measure_video_streams(fmt_probe)
         if a:
-            measurements += _gather_audio_measurements(ctx, input_path, effective_parameters, size_bytes)
+            delivery_audio_rule = request.delivery_rule.audio if request.delivery_rule is not None else None
+            measurements += _gather_audio_measurements(ctx, input_path, effective_parameters, size_bytes, delivery_audio_rule)
         else:
             measurements += measure_audio_streams(fmt_probe)
         measurements = _dedupe_measurements(measurements)
@@ -779,7 +792,10 @@ def _run_delivery_package(request: Request, ctx: ExecutionContext) -> Dict[str, 
                     stinger_path=stingers[aid][0] if aid in stingers else None,
                 )
             elif artifact.artifact_type == "audio":
-                own += _gather_audio_measurements(ctx, path, effective_parameters, sizes[aid])
+                artifact_rule = rule_by_id.get(aid)
+                own += _gather_audio_measurements(
+                    ctx, path, effective_parameters, sizes[aid], artifact_rule.audio if artifact_rule is not None else None,
+                )
             elif artifact.artifact_type == "subtitle":
                 # No cross-artifact reference video here by design (Phase 1
                 # scope) - comparing this subtitle's duration against

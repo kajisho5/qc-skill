@@ -21,6 +21,7 @@ Two kinds of checks are produced:
 
 from __future__ import annotations
 
+import math
 import unicodedata
 from bisect import bisect_left, bisect_right
 from dataclasses import dataclass, field, replace
@@ -800,6 +801,22 @@ def _evaluate_stinger_cut_frames(checks: List[QCCheck], findings: List[QCFinding
 
 
 @dataclass
+class LoopSeamRule:
+    """A loop seam to check (ADR-025): the file is declared loopable, so
+    its end runs into its start (``include_wrap``), and ``seams`` lists
+    seam times inside it (a bed repeated N times). Every limit is opt-in
+    and has no default; ``window_sec`` (the level/spectrum windows on
+    each side of a seam) is needed by the level and spectrum limits."""
+
+    window_sec: Optional[float] = None
+    seams: Optional[List[float]] = None
+    include_wrap: bool = True
+    max_click_ratio: Optional[float] = None
+    max_level_diff_db: Optional[float] = None
+    max_band_diff_db: Optional[float] = None
+
+
+@dataclass
 class AudioRule:
     require_audio_stream: Optional[bool] = None
     expected_sample_rate: Optional[int] = None
@@ -814,6 +831,7 @@ class AudioRule:
     max_loudness_range_lu: Optional[float] = None
     max_channel_level_diff_db: Optional[float] = None
     max_decode_errors: int = 0
+    loop_seam: Optional[LoopSeamRule] = None  # opt-in: one extra decode to float samples (ADR-025)
 
 
 def evaluate_audio(measurements: MeasurementMap, rule: Optional[AudioRule]) -> Tuple[List[QCCheck], List[QCFinding]]:
@@ -1019,7 +1037,129 @@ def evaluate_audio(measurements: MeasurementMap, rule: Optional[AudioRule]) -> T
                 check.finding_codes.append(f.code)
             checks.append(check)
 
+    # --- policy: loop seam (ADR-025) ---
+    if rule.loop_seam is not None:
+        _evaluate_loop_seams(checks, findings, measurements, rule.loop_seam)
+
     return checks, findings
+
+
+def _seam_label(seam: Dict[str, Any]) -> str:
+    if seam["seam"] == "wrap":
+        return f"{_at(seam['time_sec'])} wrap (end -> start)"
+    return f"{_at(seam['time_sec'])} seam"
+
+
+def _click_description(seam: Dict[str, Any], c: Dict[str, Any], limit: float) -> str:
+    if c["ratio"] is None:
+        return f"{_seam_label(seam)}: a click out of digital silence on channel {c['channel']} (second difference {c['peak']})"
+    return (
+        f"{_seam_label(seam)}: click ratio {c['ratio']} on channel {c['channel']} (second difference {c['peak']} "
+        f"against {c['reference']} around it) exceeds {limit}"
+    )
+
+
+def _loop_seam_violation(fact: str, seam: Dict[str, Any], m: Dict[str, Any], limit: float) -> Optional[str]:
+    """The description of a violation, or None when within the limit
+    (exactly the limit passes)."""
+
+    if fact == "click":
+        if m["ratio"] is None or m["ratio"] > limit:
+            return _click_description(seam, m, limit)
+        return None
+    if fact == "level":
+        if m["diff_db"] > limit:
+            return (
+                f"{_seam_label(seam)}: level {m['before_dbfs']} dBFS before and {m['after_dbfs']} dBFS after on channel "
+                f"{m['channel']}, {m['diff_db']} dB apart, more than {limit} dB"
+            )
+        return None
+    if m["max_diff_db"] is None:
+        return (
+            f"{_seam_label(seam)}: channel {m['channel']} is digital silence {m['silent_side']} the seam and not on the "
+            f"other side, so the spectrum does not continue across it"
+        )
+    if m["max_diff_db"] > limit:
+        worst = max((b for b in m["bands"] if b["compared"]), key=lambda b: b["diff_db"])
+        return (
+            f"{_seam_label(seam)}: on channel {m['channel']} the {worst['centre_hz']:g} Hz octave band is {worst['before_db']} dB "
+            f"before and {worst['after_db']} dB after (relative to each side's total), {worst['diff_db']} dB apart, "
+            f"more than {limit} dB"
+        )
+    return None
+
+
+def _loop_seam_check(
+    checks: List[QCCheck], findings: List[QCFinding], value: Optional[Dict[str, Any]], limit: Optional[float], *,
+    field_name: str, check_id: str, fact: str, code: str, key: str,
+) -> None:
+    """One limit over every seam (ADR-025). A seam that could not be
+    measured for this fact makes the check UNKNOWN unless a seam fails."""
+
+    if limit is None:
+        return
+    ids = ["audio.loop_seams"]
+    if not value or not value.get("measured"):
+        reason = (value or {}).get("reason") or "the loop seams were not measured"
+        checks.append(_unknown_check(check_id, "audio", reason, ids))
+        return
+    violations, unmeasured, measured = [], [], []
+    for seam in value["seams"]:
+        m = seam[fact]
+        if not m.get("measured"):
+            unmeasured.append({"seam": seam["seam"], "time_sec": seam["time_sec"], "reason": m.get("reason")})
+            continue
+        measured.append((math.inf if m[key] is None else m[key], seam["seam"], m[key]))
+        description = _loop_seam_violation(fact, seam, m, limit)
+        if description is not None:
+            details = {k: v for k, v in m.items() if k not in ("measured", "bands")}
+            violations.append({"seam": seam["seam"], "time_sec": seam["time_sec"], **details, "description": description})
+    violations = _sorted_by_time(violations)
+    worst = max(measured, key=lambda t: t[0], default=None)
+    evidence = {
+        "limit": limit,
+        "seams": [{"seam": s["seam"], "time_sec": s["time_sec"], fact: s[fact]} for s in value["seams"]],
+        "worst": None if worst is None else {"seam": worst[1], key: worst[2]},
+        "violations": violations, "unmeasured": unmeasured,
+    }
+    if violations:
+        status = QCStatus.FAIL
+    elif unmeasured:
+        status = QCStatus.UNKNOWN
+    else:
+        status = QCStatus.PASS
+    check = QCCheck(
+        check_id, "audio", status, ids, evidence=evidence,
+        reason=("; ".join(f"{u['seam']}: {u['reason']}" for u in unmeasured) if status == QCStatus.UNKNOWN else None),
+    )
+    if violations:
+        f = QCFinding(
+            code, FindingSeverity.FAIL,
+            f"{len(violations)} loop seam(s) over the {field_name} limit {limit}; first: {violations[0]['description']}",
+            evidence=evidence, measurement_ids=ids, timestamp=violations[0]["time_sec"],
+        )
+        findings.append(f)
+        check.finding_codes.append(f.code)
+    checks.append(check)
+
+
+def _evaluate_loop_seams(checks: List[QCCheck], findings: List[QCFinding], measurements: MeasurementMap, rule: LoopSeamRule) -> None:
+    """ADR-025: one check per limit the rule sets."""
+
+    value = _val(measurements, "audio.loop_seams")
+    _loop_seam_check(
+        checks, findings, value, rule.max_click_ratio, field_name="max_click_ratio",
+        check_id="audio.loop_seam_click_within_limit", fact="click", code="AUDIO_LOOP_SEAM_CLICK", key="ratio",
+    )
+    _loop_seam_check(
+        checks, findings, value, rule.max_level_diff_db, field_name="max_level_diff_db",
+        check_id="audio.loop_seam_level_within_limit", fact="level", code="AUDIO_LOOP_SEAM_LEVEL_MISMATCH", key="diff_db",
+    )
+    _loop_seam_check(
+        checks, findings, value, rule.max_band_diff_db, field_name="max_band_diff_db",
+        check_id="audio.loop_seam_spectrum_within_limit", fact="spectrum", code="AUDIO_LOOP_SEAM_SPECTRUM_MISMATCH",
+        key="max_diff_db",
+    )
 
 
 # ---------------------------------------------------------------------------

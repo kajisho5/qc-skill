@@ -169,6 +169,11 @@ frame at each cut must show the stinger's covered frame
 (`max_cut_frame_difference`). See [docs/checks.md](docs/checks.md) and
 ADR-024.
 
+A loopable audio bed is checked opt-in with `rules.audio.loop_seam`:
+the wrap (end -> start) and any listed seams are measured for a click, a
+level step and a change of spectral shape, each against a limit you set
+(none has a default). See [docs/checks.md](docs/checks.md) and ADR-025.
+
 `contract["provides"]` groups these checks into ten cross-repository
 Capability ids (`measure.video.freeze`, `measure.video.black_frame`,
 `measure.video.format`, `measure.audio.integrity`,

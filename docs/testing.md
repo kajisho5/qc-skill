@@ -39,6 +39,10 @@ exactly (e.g. `clean.mp4` is defined as 320x240 @25fps, 100 frames, mono
 | `stinger_wipe.mov`, `stinger_prores.mov` | 64x36 @30fps, 1.2 s stinger with alpha (QuickTime Animation 8-bit / ProRes 4444): left half covered for frames 0-12, three quarters for 13-14, the whole picture for 15-17 (cut point 0.5 s), right half after |
 | `stinger_edge.mov` | frame 10 every alpha exactly 253 (opaque by the rule), frame 20 one pixel at 252 (not) |
 | `stinger_edit.mp4`, `stinger_edit_late.mp4` | red 2 s + blue 2 s joined at frame 60 (2.0 s), `stinger_wipe` laid over the join with its frame 15 on frame 60 / one frame late |
+| `loop_seamless.wav`, `loop_naive.wav` | 16 kHz mono 250 + 1000 Hz: 2 s, whole cycles (continuous wrap) / cut at 2.003 s (a jump at the wrap) |
+| `loop_repeat10.wav`, `loop_naive_repeat10.wav` | each of the two repeated 10 times, sample for sample (seams every 2 s / 2.003 s) |
+| `loop_level_step.wav`, `loop_spectrum_step.wav` | 4 s beds, continuous at the wrap, quieter / brighter (2000 Hz instead of 250 Hz) before it than after it |
+| `loop_silence.wav`, `loop_click_from_silence.wav`, `loop_stereo_click.wav`, `loop_empty.wav` | digital silence; silence whose last sample is half scale; stereo with the right channel's phase flipped at 1 s; a WAV header with no samples |
 
 ## Test matrix
 
@@ -93,6 +97,14 @@ exactly (e.g. `clean.mp4` is defined as 320x240 @25fps, 100 frames, mono
   against the stinger (placed right PASS, one frame late FAIL, exactly
   the limit PASS), unreadable or missing stinger files, the stinger's
   content in the identity, kind delivery and delivery_package.
+- **Loop seams** (`test_loop_seam_checks.py`) - ADR-025: the click
+  ratio, RMS and band-shape measures and the FFT against a direct DFT;
+  a seamless loop and a bed repeated 10 times PASS, a naive cut FAIL at
+  every seam with seconds, a level step and a spectral step each fail
+  only their own check, every limit exact at its edge, silence PASS, a
+  click out of silence and a one-channel click FAIL, windows that do not
+  fit / seams past the end / no samples / no ffmpeg UNKNOWN, kind
+  delivery and delivery_package.
 - **Security** (`test_security.py`, `test_security_injection.py`) -
   forbidden request keys (including nested), shell-metacharacter
   filenames, path traversal, prefix collision, symlink escape (input and
