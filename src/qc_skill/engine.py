@@ -260,12 +260,18 @@ def _gather_subtitle_measurements(
     subtitle_path: Path, video_duration_sec: Optional[float], params: Dict[str, Any],
     subtitle_rule: Optional[SubtitleRule] = None, transcript_path: Optional[Path] = None,
 ) -> List[QCMeasurement]:
+    # A limit the SubtitleRule states is the threshold its check uses; the
+    # engine parameters are only the fallback when the rule leaves it unset.
+    def _limit(name: str) -> Any:
+        value = getattr(subtitle_rule, name, None) if subtitle_rule is not None else None
+        return params[name] if value is None else value
+
     measurements = measure_subtitle(
         subtitle_path,
         video_duration_sec=video_duration_sec,
-        max_line_length=params["max_line_length"],
-        max_cue_duration=params["max_cue_duration_sec"],
-        max_gap_sec=params["max_gap_sec"],
+        max_line_length=_limit("max_line_length"),
+        max_cue_duration=_limit("max_cue_duration_sec"),
+        max_gap_sec=_limit("max_gap_sec"),
         include_cue_texts=subtitle_rule_needs_cue_texts(subtitle_rule),
     )
     if transcript_path is not None:

@@ -97,3 +97,32 @@ def test_line_length_and_gap_rules(media, workspace):
     checks = checks_by_id(resp)
     assert checks["subtitle.line_length_within_limit"]["status"] == "WARN"
     assert checks["subtitle.gaps_within_limit"]["status"] == "WARN"
+
+
+def test_rule_limits_are_the_thresholds_not_the_defaults(media, workspace):
+    """The SubtitleRule's own max_line_length / max_cue_duration_sec / max_gap_sec are the limits checked,
+    not the engine's default parameters (42 chars, 7 s, 5 s)."""
+    srt = workspace / "rule_limits.srt"
+    srt.write_text(
+        "1\n00:00:00,000 --> 00:00:03,000\n"
+        + ("x" * 20)
+        + "\n\n2\n00:00:06,000 --> 00:00:07,000\nshort\n\n",
+        encoding="utf-8",
+    )
+    tight = {
+        "operation": "check", "kind": "subtitle", "input": str(srt),
+        "rules": {"subtitle": {"max_line_length": 10, "max_cue_duration_sec": 2.0, "max_gap_sec": 2.0}},
+    }
+    checks = checks_by_id(run(tight, workspace))
+    assert checks["subtitle.line_length_within_limit"]["status"] == "WARN"
+    assert checks["subtitle.cue_duration_within_limit"]["status"] == "WARN"
+    assert checks["subtitle.gaps_within_limit"]["status"] == "WARN"
+
+    loose = {
+        "operation": "check", "kind": "subtitle", "input": str(srt),
+        "rules": {"subtitle": {"max_line_length": 60, "max_cue_duration_sec": 4.0, "max_gap_sec": 4.0}},
+    }
+    checks = checks_by_id(run(loose, workspace))
+    assert checks["subtitle.line_length_within_limit"]["status"] == "PASS"
+    assert checks["subtitle.cue_duration_within_limit"]["status"] == "PASS"
+    assert checks["subtitle.gaps_within_limit"]["status"] == "PASS"
