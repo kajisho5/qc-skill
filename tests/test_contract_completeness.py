@@ -18,6 +18,7 @@ from pathlib import Path
 from qc_skill import contract as contract_module
 from qc_skill import rules as rules_module
 from qc_skill.measurements import audio as audio_module
+from qc_skill.measurements import loop_seam as loop_seam_module
 from qc_skill.measurements import reference as reference_module
 from qc_skill.measurements import stinger as stinger_module
 from qc_skill.measurements import subtitle as subtitle_module
@@ -63,7 +64,7 @@ def _actual_measurement_ids() -> set:
     ids = set()
     for module in (
         video_module, audio_module, subtitle_module, temporal_module, text_legibility_module, reference_module,
-        transcript_module, stinger_module, engine_module,
+        transcript_module, stinger_module, loop_seam_module, engine_module,
     ):
         src = _source_of(module)
         ids |= set(_MEASUREMENT_ID_LITERAL_RE.findall(src))

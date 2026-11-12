@@ -301,6 +301,87 @@ count.
 YouTube") - `integrated_loudness_target_lufs` and every other target must
 come from the request.
 
+### Opt-in loop seams (ADR-025)
+
+For audio declared loopable, `AudioRule.loop_seam` (any `AudioRule`:
+`kind: audio`, `delivery.audio`, a `delivery_package` artifact's `audio`)
+measures the seam where the end runs into the start (the *wrap*) and any
+seam times listed inside the file (a bed repeated N times has one every
+period). One extra decode to 32-bit float samples at the file's own rate
+and channel count; the rest is pure Python.
+
+| field | meaning |
+|---|---|
+| `include_wrap` | default `true`: measure the wrap (end -> start, joined in memory) |
+| `seams` | optional seconds of seams inside the file, e.g. `[8, 16, ..., 72]` for an 8 s loop repeated 10 times |
+| `window_sec` | the level/spectrum windows: this long on each side of a seam; no default, needed by the two limits below |
+| `max_click_ratio` | limit for `audio.loop_seam_click_within_limit`; no default |
+| `max_level_diff_db` | limit for `audio.loop_seam_level_within_limit`; no default |
+| `max_band_diff_db` | limit for `audio.loop_seam_spectrum_within_limit`; no default |
+
+**Measurement** (`src/qc_skill/measurements/loop_seam.py`):
+`audio.loop_seams` = `{measured, sample_rate, channels, samples,
+duration_sec, window_sec, window_samples, seams: [{seam: "wrap" | seconds,
+time_sec, click, level, spectrum}]}` (the wrap's `time_sec` is the end of
+the file). Each fact is `{measured: true, ...}` or `{measured: false,
+reason}` on its own:
+
+- **click** `{ratio, from_silence, peak, reference, step, channel}`. The
+  second difference `x[i-1] - 2x[i] + x[i+1]` turns a step or a kink into
+  a spike and stays small on smooth material. `ratio` = the largest
+  `|second difference|` within +-1 ms of the seam / its 99th percentile
+  (nearest rank) within +-50 ms around it, outside that +-1 ms. Continuous
+  material measures about 1. When the surroundings are digital silence the
+  ratio is 0 for a silent seam and `null` with `from_silence: true` for a
+  click out of silence (a violation of any limit). `step` is the sample
+  jump across the seam (full scale 1.0). Worst channel.
+- **level** `{before_dbfs, after_dbfs, diff_db, channel}`: RMS of the last
+  `window_sec` before the seam and the first `window_sec` after it, in
+  dBFS (`20 log10 rms`, floored at -120). Worst channel.
+- **spectrum** `{max_diff_db, bands: [{centre_hz, before_db, after_db,
+  diff_db, compared}], bands_compared, frame_samples, before_total_db,
+  after_total_db, channel}`: octave bands centred on 62.5 Hz * 2^k (each a
+  factor of two wide; the top one may be cut off at the Nyquist
+  frequency, so every frequency up to it is in a band) from Hann-windowed,
+  non-overlapping frames of a power of two near a tenth of a second, the
+  whole frames next to the seam. Each band is taken relative to its side's
+  total, so the spectrum compares **shape**: a level change alone is the
+  level fact's. Bands more than 30 dB below the loudest band (over both
+  sides) are not compared. A side that is digital silence has no shape:
+  `max_diff_db` is 0 when both sides are, `null` with `silent_side` when
+  one is (a violation). Worst channel.
+
+A seam whose windows do not fit in the file (the wrap of a file shorter
+than two windows, a seam closer than a window to an end, a seam past the
+end, less than 50 ms of audio around it for the click, a `window_sec`
+shorter than two samples, samples there that are not finite numbers) is
+not measured for that fact, with the reason. Nothing is padded.
+
+**Policy checks** (each only when its limit is set; exactly the limit
+passes; values are compared as reported):
+
+| check_id | rule field | finding |
+|---|---|---|
+| `audio.loop_seam_click_within_limit` | `max_click_ratio` | `AUDIO_LOOP_SEAM_CLICK` |
+| `audio.loop_seam_level_within_limit` | `max_level_diff_db` (+ `window_sec`) | `AUDIO_LOOP_SEAM_LEVEL_MISMATCH` |
+| `audio.loop_seam_spectrum_within_limit` | `max_band_diff_db` (+ `window_sec`) | `AUDIO_LOOP_SEAM_SPECTRUM_MISMATCH` |
+
+Each check covers every seam: FAIL when any seam is over the limit,
+UNKNOWN when none is but a seam could not be measured (or nothing could
+be: no audio stream, no samples, a decode failure, more than 128 MiB of
+float samples - ffmpeg is told to stop writing there), PASS otherwise. `evidence.violations` is sorted by time; each
+has `seam`, `time_sec`, the measured values and a `description` such as
+`2.003s wrap (end -> start): click ratio 12.2217 on channel 0 ...`; the
+finding's `timestamp` is the first violation's time.
+
+**No default limits.** Suggested starting points, from the test
+fixtures (16 kHz tones): a continuous wrap measures a click ratio of about
+0.94, a loop cut 3 ms off a whole cycle 12.2, a phase flip on one channel
+20.4 - start `max_click_ratio` around 3. With `window_sec` 1 (long enough
+that a beat right after the seam averages out; much shorter windows judge
+the music's own movement), start `max_level_diff_db` around 1.5 and
+`max_band_diff_db` around 6.
+
 ## Subtitle (`kind: "subtitle"`, and `kind: "delivery"` via the `subtitle` field)
 
 Formats: SRT, WebVTT, ASS/SSA (cue timing and text only - styling/tags are

@@ -5,7 +5,7 @@ Written from a read-only audit of this repository on 2026-10-30. Each step below
 
 ## Where it stands
 
-v1.2.0, Python 3.9+ stdlib. contract, doctor, run (inspect/check/validate; video/audio/subtitle/delivery/delivery_package; 65 checks after step 9). 30 test modules, CI on 3 OSes x 2 Pythons. Already an OS registry fixture.
+v1.3.0, Python 3.9+ stdlib. contract, doctor, run (inspect/check/validate; video/audio/subtitle/delivery/delivery_package; 68 checks after step 10). 31 test modules, CI on 3 OSes x 2 Pythons. Already an OS registry fixture.
 
 ## What this repository owns
 
@@ -39,7 +39,7 @@ Agent wires qc/check and qc/inspect (ADR-032); provides[] publishes qc/check as 
   - Done when: each check PASS/FAIL/UNKNOWN with times in evidence; transcripts without `index`/`pos` still read
 - [x] **9. Stinger cut-point check** — handed over by video-editing-skill (step 13, its ADR-032) and hyperframes-skill (step 15): opt-in `VideoRule.stinger {cut_point, cover}` from stinger.json → `video.stinger_opaque_at_cut_point` (every pixel's alpha >= 253/255 at the cut frame, video-editing-skill's rule; `VIDEO_STINGER_NOT_OPAQUE`) and `video.stinger_cut_point_in_cover`; with `file` + `cut_at` + `max_cut_frame_difference` on a delivered video, `video.stinger_cut_frame_matches` (`VIDEO_STINGER_CUT_FRAME_MISMATCH`); no alpha / unreadable frame UNKNOWN (ADR-024) ([#32](https://github.com/kajisho5/qc-skill/pull/32))
   - Done when: a stinger's cut frame PASS, a partly covered frame FAIL with the pixels below, 253 PASS / 252 FAIL, no alpha UNKNOWN; a delivered edit with the stinger on the cut PASS, one frame late FAIL
-- [ ] **10. Loop-seam check for audio** — handed over by sound-design-skill (step 7, its ADR-011): for a file declared loopable, the seam end → start (and any internal seams) measured for a click, a level step and a spectral step; every threshold a rule field with no default
+- [x] **10. Loop-seam check for audio** — handed over by sound-design-skill (step 7, its ADR-011): opt-in `AudioRule.loop_seam {include_wrap, seams, window_sec}` measures the wrap end → start and listed internal seams from decoded samples → `audio.loop_seam_click_within_limit` (`max_click_ratio`: second difference at the seam over its 99th percentile around it; `AUDIO_LOOP_SEAM_CLICK`), `audio.loop_seam_level_within_limit` (`max_level_diff_db`, RMS of `window_sec` each side; `AUDIO_LOOP_SEAM_LEVEL_MISMATCH`), `audio.loop_seam_spectrum_within_limit` (`max_band_diff_db`, octave-band shape; `AUDIO_LOOP_SEAM_SPECTRUM_MISMATCH`); no limit has a default (ADR-025) ([#33](https://github.com/kajisho5/qc-skill/pull/33))
   - Done when: a seamless loop and a bed repeated 10 times PASS, a naive cut FAIL with the click, each threshold's edge exact, an unreadable or too-short file UNKNOWN
 
 ## Boundaries

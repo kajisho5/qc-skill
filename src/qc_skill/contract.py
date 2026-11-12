@@ -26,6 +26,7 @@ from .rules import (
     DeliveryArtifactRule,
     DeliveryPackageRule,
     DeliveryRule,
+    LoopSeamRule,
     POS_TAGS,
     SUBTITLE_PRESETS,
     SourceCue,
@@ -36,6 +37,9 @@ from .rules import (
     TimelineIntegrityRule,
     TimelineSegment,
     VideoRule,
+)
+from .measurements.loop_seam import (
+    BAND_BASE_HZ, BAND_RANGE_DB, CLICK_CONTEXT_PERCENTILE, CLICK_CONTEXT_SEC, CLICK_WINDOW_SEC, LEVEL_FLOOR_DB,
 )
 from .measurements.stinger import ALPHA_SCALE, OPAQUE_MIN_ALPHA
 from .schemas import VALID_ARTIFACT_TYPES
@@ -66,6 +70,8 @@ SUPPORTED_AUDIO_MEASUREMENTS = [
     "audio.integrated_loudness_lufs", "audio.loudness_range_lu", "audio.true_peak_dbfs",
     "audio.silence_segments", "audio.leading_silence_sec", "audio.trailing_silence_sec",
     "audio.internal_silence_segments", "audio.decode_error_count", "audio.decode_errors",
+    # opt-in, only when AudioRule.loop_seam is set (ADR-025)
+    "audio.loop_seams",
 ]
 
 SUPPORTED_SUBTITLE_MEASUREMENTS = [
@@ -104,6 +110,7 @@ SUPPORTED_CHECKS = [
     "audio.leading_silence_within_tolerance", "audio.trailing_silence_within_tolerance",
     "audio.internal_silence_within_tolerance", "audio.integrated_loudness_within_tolerance",
     "audio.true_peak_within_tolerance", "audio.loudness_range_within_tolerance", "audio.channel_balance_within_tolerance",
+    "audio.loop_seam_click_within_limit", "audio.loop_seam_level_within_limit", "audio.loop_seam_spectrum_within_limit",
     "subtitle.presence_matches_expected", "subtitle.timestamps_valid", "subtitle.no_empty_cues",
     "subtitle.no_duplicate_ids", "subtitle.no_control_characters", "subtitle.no_overlapping_cues",
     "subtitle.line_length_within_limit", "subtitle.cue_duration_within_limit", "subtitle.gaps_within_limit",
@@ -171,6 +178,9 @@ FINDING_CATALOG = [
     ("AUDIO_LOUDNESS_RANGE_EXCEEDED", "WARN"),
     ("AUDIO_CHANNEL_IMBALANCE", "FAIL"),
     ("AUDIO_CHANNEL_MISSING", "FAIL"),
+    ("AUDIO_LOOP_SEAM_CLICK", "FAIL"),
+    ("AUDIO_LOOP_SEAM_LEVEL_MISMATCH", "FAIL"),
+    ("AUDIO_LOOP_SEAM_SPECTRUM_MISMATCH", "FAIL"),
     ("SUBTITLE_MISSING", "FAIL"),
     ("SUBTITLE_INVALID_TIMESTAMP", "FAIL"),
     ("SUBTITLE_EMPTY_CUE", "WARN"),
@@ -283,6 +293,10 @@ UNGROUPED_CHECKS = [
     "video.stinger_cut_point_in_cover",
     "video.stinger_opaque_at_cut_point",
     "video.stinger_cut_frame_matches",
+    # ADR-025: no Capability id for loop seams exists in CAPABILITY_MATRIX.md yet.
+    "audio.loop_seam_click_within_limit",
+    "audio.loop_seam_level_within_limit",
+    "audio.loop_seam_spectrum_within_limit",
     # ADR-023: no Capability id for cue-text or subtitle-vs-speech checks exists in
     # CAPABILITY_MATRIX.md yet.
     "subtitle.cue_boundaries_on_word_boundaries",
@@ -371,6 +385,7 @@ _NESTED_RULE_NAMES = {
     SourceCue: "timeline_source_cue",
     TextRegion: "text_region",
     CoveredInterval: "subtitle_covered_interval",
+    LoopSeamRule: "audio_loop_seam",
     StingerRule: "video_stinger",
     StingerCover: "video_stinger_cover",
 }
@@ -416,6 +431,7 @@ def rules_contract_schema() -> Dict[str, Any]:
         "timeline_source_cue": _rule_schema(SourceCue),
         "text_region": _rule_schema(TextRegion),
         "subtitle_covered_interval": _rule_schema(CoveredInterval),
+        "audio_loop_seam": _rule_schema(LoopSeamRule),
         "video_stinger": _rule_schema(StingerRule),
         "video_stinger_cover": _rule_schema(StingerCover),
     }
@@ -505,6 +521,15 @@ def skill_contract() -> Dict[str, Any]:
                            "(alpha * 255 >= 253 * max at its native bit depth; video-editing-skill's rule)",
             "cut_frames": "with file + cut_at: mean absolute difference (8-bit RGB, 0-255) of the input's frame at each cut_at and "
                           "the stinger's frame at cut_point scaled to the input's size; no default for max_cut_frame_difference",
+        },
+        "loop_seam": {
+            "rule": "rules.audio.loop_seam: {window_sec?, seams?: [seconds], include_wrap (default true), max_click_ratio?, "
+                    "max_level_diff_db?, max_band_diff_db?} - no limit has a default (ADR-025)",
+            "click": f"max |second difference| within +-{CLICK_WINDOW_SEC * 1000:g} ms of the seam over its "
+                     f"{CLICK_CONTEXT_PERCENTILE}th percentile within +-{CLICK_CONTEXT_SEC * 1000:g} ms outside that, worst channel",
+            "level": f"RMS dBFS of window_sec on each side, worst channel, floored at {LEVEL_FLOOR_DB:g}",
+            "spectrum": f"octave bands centred on {BAND_BASE_HZ:g} Hz * 2^k of the same windows, each relative to its side's "
+                        f"total (shape, not level); bands within {BAND_RANGE_DB:g} dB of the loudest are compared, worst channel",
         },
         "findings": findings_contract_catalog(),
         "formats": SUPPORTED_FORMATS,

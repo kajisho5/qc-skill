@@ -934,3 +934,77 @@ cover window (that frame is where the clips switch, as in
 video-editing-skill), and not which clip shows before and after the cut
 (qc-skill is not given the clips). The checks join no `provides`
 Capability group (ADR-014 precedent).
+
+## ADR-025: a loop seam is measured for a click, a level step and a change of spectral shape, from the decoded samples, with no default limit
+
+sound-design-skill makes loopable beds (its roadmap step 7, ADR-011);
+its acceptance point is a bed repeated 10 times passing qc-skill's loop
+seam check, which did not exist. A loop is heard end -> start, so the
+seam to judge is the wrap, and a file made of repeats has seams inside it
+as well.
+
+- **Rule.** `AudioRule.loop_seam: {window_sec?, seams?, include_wrap
+  (default true), max_click_ratio?, max_level_diff_db?,
+  max_band_diff_db?}`. Declaring the file loopable is the rule's
+  presence. Each limit runs its own check only when set (ADR-005): none is
+  a standard, so none has a default, and docs/checks.md gives measured
+  starting points instead. `window_sec` has no default either: the level
+  and spectrum limits need it, and a request that sets one without it is
+  refused rather than given a guessed window.
+- **Samples, not filters.** One ffmpeg decode to 32-bit float at the
+  file's own rate and channel count (`ffmpeg_rawaudio_argv`), then pure
+  Python. ffmpeg's `astats`/`ebur128` report a whole file or fixed
+  windows, not two windows aligned on a seam, and the wrap only exists
+  once the end and the start are joined, which is done in memory, never
+  written. ffmpeg is told to stop writing after 128 MiB of samples
+  (`-fs`), so a file whose duration is missing or wrong cannot fill the
+  memory; such a file is UNKNOWN. The samples are read in place, not
+  copied. 128 MiB is about six minutes of 48 kHz stereo, far above a
+  bed's length.
+- **Click.** A discontinuity is a step or a kink; the second difference
+  `x[i-1] - 2x[i] + x[i+1]` spikes at both and stays small on smooth
+  material. The ratio of its largest value within 1 ms of the seam to
+  its 99th percentile in the 50 ms around (outside that 1 ms) is
+  dimensionless, so one limit serves quiet and loud beds: continuous
+  material measures about 1. The percentile, not the maximum, keeps a
+  drum hit near the seam from hiding a click. Out of digital silence the
+  ratio is undefined; a silent seam is 0 and anything else is reported as
+  a click out of silence, never as a number made up to fit.
+- **Level.** RMS dBFS of `window_sec` on each side (floored at -120 so
+  silence stays a number in JSON). Unweighted RMS, not a K-weighted
+  short-term loudness: the question is whether the two sides match, and
+  both sides go through the same measure.
+- **Spectrum.** Octave bands (62.5 Hz * 2^k; the top one cut off at
+  the Nyquist frequency, so nothing above the last full octave is left
+  out) of the same windows, each
+  relative to its side's total, so this check sees the shape and leaves a
+  plain level step to the level check: one cause, one finding. Bands
+  more than 30 dB under the loudest are not compared (they are inaudible
+  next to it and their ratios are noise). The frames are the whole
+  frames next to the seam, Hann-windowed; the transform is a radix-2 FFT
+  in Python (no numpy).
+- **Channels.** Click, level and spectrum are measured on every channel
+  and the worst is reported with its index. Mixing to mono first was
+  tried and dropped: channels out of phase on one side of a seam cancel
+  there in the mix, and a seam whose channels each matched measured as a
+  109 dB spectral "mismatch".
+- **No audio stream.** Every limit the rule sets is reported UNKNOWN
+  with that reason, not dropped.
+- **Seams that do not fit** (a file shorter than two windows, a seam
+  within a window of an end or past it, less than 50 ms of audio around
+  it for the click) are not measured for that fact, with the reason;
+  nothing is padded. A check is UNKNOWN when no seam fails and one could
+  not be measured.
+- **Evidence.** One finding per check; `evidence.violations` sorted by
+  time with `seam`, `time_sec`, the measured values and a one-line
+  `description`; the finding's `timestamp` is the first violation's time.
+  Values are rounded once when measured and judged as reported, so the
+  limit's edge is exact for a caller reading the report.
+
+Also with this change: a NaN or an Infinity anywhere in a request (which
+`json.loads` accepts) is `INVALID_REQUEST` before any field is read. It
+used to reach a rule as a limit that every value fails (NaN) or passes
+(Infinity), or the identity hash as an uncaught error.
+
+The three checks join no `provides` Capability group (ADR-014
+precedent).

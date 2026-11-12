@@ -203,6 +203,7 @@ def build_all(out_dir: Path) -> Dict[str, Path]:
     _build_visual_qc_fixtures(out_dir, paths)
     _build_reference_fixtures(out_dir, paths)
     _build_stinger_fixtures(out_dir, paths)
+    _build_loop_seam_fixtures(out_dir, paths)
     return paths
 
 
@@ -347,3 +348,67 @@ def _build_stinger_fixtures(out_dir: Path, paths: Dict[str, Path]) -> None:
             "-map", "[out]", "-c:v", "libx264", "-crf", "18", "-pix_fmt", "yuv420p", str(path),
         )
         paths[name] = path
+
+
+def _aeval_wav(path: Path, expr: str, duration: float, rate: int = 16000) -> None:
+    _run("-f", "lavfi", "-i", f"aevalsrc='{expr}':s={rate}:d={duration}", "-c:a", "pcm_s16le", str(path))
+
+
+def _repeat_wav(src: Path, dst: Path, times: int) -> None:
+    """``src`` repeated end to end, sample for sample."""
+
+    with wave.open(str(src), "rb") as r:
+        params, frames = r.getparams(), r.readframes(r.getnframes())
+    with wave.open(str(dst), "wb") as w:
+        w.setparams(params)
+        w.writeframes(frames * times)
+
+
+def _build_loop_seam_fixtures(out_dir: Path, paths: Dict[str, Path]) -> None:
+    """ADR-025 fixtures, 16 kHz 16-bit PCM. The tone is 250 Hz + 1000 Hz,
+    whole cycles in 2 s, so a 2 s loop wraps continuously and a 2.003 s one
+    jumps; the 4 s beds change level or spectral balance over one period
+    of a slow sine, continuous at the wrap but different on its two sides."""
+
+    tone = "0.4*sin(2*PI*250*t)+0.2*sin(2*PI*1000*t)"
+    seamless = out_dir / "loop_seamless.wav"
+    _aeval_wav(seamless, tone, 2)
+    paths["loop_seamless"] = seamless
+    naive = out_dir / "loop_naive.wav"
+    _aeval_wav(naive, tone, 2.003)
+    paths["loop_naive"] = naive
+    for name, src in (("loop_repeat10", seamless), ("loop_naive_repeat10", naive)):
+        path = out_dir / f"{name}.wav"
+        _repeat_wav(src, path, 10)
+        paths[name] = path
+    level = out_dir / "loop_level_step.wav"  # quieter before the wrap than after it
+    _aeval_wav(level, "(0.3+0.2*sin(2*PI*t/4))*sin(2*PI*250*t)", 4)
+    paths["loop_level_step"] = level
+    spectrum = out_dir / "loop_spectrum_step.wav"  # 2000 Hz before the wrap, 250 Hz after it, at one level
+    _aeval_wav(
+        spectrum,
+        "(0.5+0.5*sin(2*PI*t/4))*0.4*sin(2*PI*250*t)+(0.5-0.5*sin(2*PI*t/4))*0.4*sin(2*PI*2000*t)", 4,
+    )
+    paths["loop_spectrum_step"] = spectrum
+    silence = out_dir / "loop_silence.wav"
+    _aeval_wav(silence, "0", 2)
+    paths["loop_silence"] = silence
+    stereo = out_dir / "loop_stereo_click.wav"  # the right channel flips phase at 1.0 s: a jump there and at the wrap
+    _aeval_wav(stereo, "0.4*sin(2*PI*250*t)|0.4*sin(2*PI*250*t+PI*gt(t,1))", 2)
+    paths["loop_stereo_click"] = stereo
+
+    # 1 s of digital silence whose very last sample is half scale: a click out of silence at the wrap.
+    from_silence = out_dir / "loop_click_from_silence.wav"
+    with wave.open(str(from_silence), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(16000)
+        w.writeframes(b"\x00\x00" * 15999 + struct.pack("<h", 16384))
+    paths["loop_click_from_silence"] = from_silence
+    empty = out_dir / "loop_empty.wav"  # a WAV header and no samples
+    with wave.open(str(empty), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(16000)
+        w.writeframes(b"")
+    paths["loop_empty"] = empty

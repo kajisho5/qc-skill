@@ -9,6 +9,7 @@ environment override through the request (STEP 15).
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -22,6 +23,7 @@ from .rules import (
     DeliveryArtifactRule,
     DeliveryPackageRule,
     DeliveryRule,
+    LoopSeamRule,
     POS_TAGS,
     REFERENCE_METRICS,
     SUBTITLE_PRESETS,
@@ -79,6 +81,25 @@ def _find_forbidden(doc: Any, path: str = "") -> Optional[str]:
     return None
 
 
+def _find_non_finite(doc: Any, path: str = "") -> Optional[str]:
+    """The first NaN / Infinity anywhere in the document: ``json.loads``
+    accepts them, and no field means them."""
+
+    if isinstance(doc, float) and not math.isfinite(doc):
+        return path or "(document)"
+    if isinstance(doc, dict):
+        for k, v in doc.items():
+            found = _find_non_finite(v, f"{path}.{k}" if path else str(k))
+            if found:
+                return found
+    elif isinstance(doc, list):
+        for i, item in enumerate(doc):
+            found = _find_non_finite(item, f"{path}[{i}]")
+            if found:
+                return found
+    return None
+
+
 @dataclass
 class DeliveryArtifact:
     """One named file inside a ``kind: "delivery_package"`` request.
@@ -128,6 +149,8 @@ def _build_rule(cls, data: Optional[Dict[str, Any]]):
     kwargs = dict(data)
     if cls is VideoRule:
         _validate_video_rule_fields(kwargs)
+    if cls is AudioRule and kwargs.get("loop_seam") is not None:
+        kwargs["loop_seam"] = _build_loop_seam_rule(kwargs["loop_seam"])
     if cls is SubtitleRule:
         _validate_subtitle_rule_fields(kwargs)
     if "video" in kwargs and kwargs["video"] is not None:
@@ -147,6 +170,8 @@ def _build_rule(cls, data: Optional[Dict[str, Any]]):
 def _number(value: Any, *, field_name: str, allow_negative: bool = True) -> float:
     if not isinstance(value, (int, float)) or isinstance(value, bool):
         raise error("INVALID_REQUEST", f"{field_name} must be a number")
+    if not math.isfinite(value):  # JSON decoders accept NaN / Infinity; no rule field means them
+        raise error("INVALID_REQUEST", f"{field_name} must be a finite number")
     if not allow_negative and value < 0:
         raise error("INVALID_REQUEST", f"{field_name} must not be negative")
     return float(value)
@@ -294,6 +319,45 @@ def _validate_video_rule_fields(kwargs: Dict[str, Any]) -> None:
             role: _number(v, field_name=f"VideoRule.min_text_height_px.{role}", allow_negative=False)
             for role, v in sorted(heights.items())
         }
+
+
+def _build_loop_seam_rule(data: Any) -> LoopSeamRule:
+    """ADR-025: ``AudioRule.loop_seam``. Every limit is opt-in with no
+    default; the level and spectrum limits need ``window_sec``."""
+
+    if not isinstance(data, dict):
+        raise error("INVALID_REQUEST", "AudioRule.loop_seam must be an object")
+    allowed = {f for f in LoopSeamRule.__dataclass_fields__}  # type: ignore[attr-defined]
+    unknown = set(data) - allowed
+    if unknown:
+        raise error("INVALID_REQUEST", f"unknown fields for AudioRule.loop_seam: {sorted(unknown)}")
+    kwargs: Dict[str, Any] = {}
+    if data.get("window_sec") is not None:
+        window = _number(data["window_sec"], field_name="AudioRule.loop_seam.window_sec", allow_negative=False)
+        if window <= 0 or window > 60:
+            raise error("INVALID_REQUEST", "AudioRule.loop_seam.window_sec must be greater than 0 and at most 60")
+        kwargs["window_sec"] = window
+    if data.get("seams") is not None:
+        seams = data["seams"]
+        if not isinstance(seams, list):
+            raise error("INVALID_REQUEST", "AudioRule.loop_seam.seams must be a list of seconds")
+        times = sorted(_number(t, field_name="AudioRule.loop_seam.seams[]", allow_negative=False) for t in seams)
+        if len(set(times)) != len(times):
+            raise error("INVALID_REQUEST", "AudioRule.loop_seam.seams has duplicate times")
+        kwargs["seams"] = times
+    if "include_wrap" in data:
+        if not isinstance(data["include_wrap"], bool):
+            raise error("INVALID_REQUEST", "AudioRule.loop_seam.include_wrap must be a boolean")
+        kwargs["include_wrap"] = data["include_wrap"]
+    for name in ("max_click_ratio", "max_level_diff_db", "max_band_diff_db"):
+        if data.get(name) is not None:
+            kwargs[name] = _number(data[name], field_name=f"AudioRule.loop_seam.{name}", allow_negative=False)
+    rule = LoopSeamRule(**kwargs)
+    if not rule.include_wrap and not rule.seams:
+        raise error("INVALID_REQUEST", "AudioRule.loop_seam has no seam to measure: include_wrap is false and seams is empty")
+    if rule.window_sec is None and (rule.max_level_diff_db is not None or rule.max_band_diff_db is not None):
+        raise error("INVALID_REQUEST", "AudioRule.loop_seam.max_level_diff_db / max_band_diff_db need window_sec (no default)")
+    return rule
 
 
 def _build_covered_interval(item: Any) -> CoveredInterval:
@@ -525,6 +589,9 @@ def parse_request(doc: Any) -> Request:
     forbidden = _find_forbidden(doc)
     if forbidden:
         raise error("INVALID_REQUEST", f"request contains a forbidden key: {forbidden}")
+    non_finite = _find_non_finite(doc)
+    if non_finite:
+        raise error("INVALID_REQUEST", f"{non_finite} must be a finite number (NaN and Infinity are not accepted)")
 
     unknown = set(doc) - ALLOWED_TOP_LEVEL_KEYS
     if unknown:
