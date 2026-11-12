@@ -857,6 +857,8 @@ def evaluate_audio(measurements: MeasurementMap, rule: Optional[AudioRule]) -> T
         checks.append(check)
 
     if not stream_present:
+        if rule.loop_seam is not None:  # an asked-for loop-seam limit is reported, not silently dropped
+            _evaluate_loop_seams(checks, findings, {}, rule.loop_seam, reason="the input has no audio stream")
         return checks, findings
 
     # --- baseline: decode integrity ---
@@ -1143,10 +1145,14 @@ def _loop_seam_check(
     checks.append(check)
 
 
-def _evaluate_loop_seams(checks: List[QCCheck], findings: List[QCFinding], measurements: MeasurementMap, rule: LoopSeamRule) -> None:
-    """ADR-025: one check per limit the rule sets."""
+def _evaluate_loop_seams(
+    checks: List[QCCheck], findings: List[QCFinding], measurements: MeasurementMap, rule: LoopSeamRule,
+    *, reason: Optional[str] = None,
+) -> None:
+    """ADR-025: one check per limit the rule sets (each UNKNOWN with
+    ``reason`` when the seams could not be measured at all)."""
 
-    value = _val(measurements, "audio.loop_seams")
+    value = {"measured": False, "reason": reason} if reason else _val(measurements, "audio.loop_seams")
     _loop_seam_check(
         checks, findings, value, rule.max_click_ratio, field_name="max_click_ratio",
         check_id="audio.loop_seam_click_within_limit", fact="click", code="AUDIO_LOOP_SEAM_CLICK", key="ratio",

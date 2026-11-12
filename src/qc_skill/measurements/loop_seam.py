@@ -22,8 +22,8 @@ rate and channel count; everything else is pure Python):
   * **Spectrum.** Octave-band levels of the same two windows, per
     channel: Hann-windowed, non-overlapping frames of a power-of-two
     length (about a tenth of a second), averaged; bands centred on
-    62.5 Hz * 2^k up to the Nyquist frequency, each spanning a factor of
-    two. Each band is taken relative to its side's total, so the shape is
+    62.5 Hz * 2^k, each spanning a factor of two, the top one cut off at
+    the Nyquist frequency. Each band is taken relative to its side's total, so the shape is
     compared and a level change alone is left to the level fact. Bands
     more than ``BAND_RANGE_DB`` below the loudest (over both windows) are
     not compared - they carry no audible share of the spectrum.
@@ -55,7 +55,7 @@ CLICK_CONTEXT_PERCENTILE = 99
 LEVEL_FLOOR_DB = -120.0
 BAND_RANGE_DB = 30.0
 BAND_BASE_HZ = 62.5
-MAX_DECODED_BYTES = 256 * 1024 * 1024  # 32-bit float samples held in memory at once
+MAX_DECODED_BYTES = 128 * 1024 * 1024  # 32-bit float samples held at once (ffmpeg stops writing past it)
 
 LOOP_SEAM_NOTE = (
     f"click_ratio = max |second difference| within +-{CLICK_WINDOW_SEC * 1000:g} ms of the seam / its "
@@ -181,7 +181,7 @@ def band_levels(samples: Sequence[float], sample_rate: int, frame: int) -> List[
     bin_hz = sample_rate / frame
     out: List[Tuple[float, float]] = []
     centre = BAND_BASE_HZ
-    while centre * math.sqrt(2.0) <= nyquist:
+    while centre / math.sqrt(2.0) < nyquist:  # the top band may end at the Nyquist frequency, part of an octave
         low, high = centre / math.sqrt(2.0), centre * math.sqrt(2.0)
         bins = [k for k in range(1, half + 1) if low <= k * bin_hz < high]
         if bins:
@@ -236,12 +236,12 @@ def spectrum_difference(before: Sequence[float], after: Sequence[float], sample_
 # --- decoding and per-seam assembly -----------------------------------------
 
 
-def _channel(data: array, channels: int, ch: int, start: int, end: int) -> List[float]:
+def _channel(data: Any, channels: int, ch: int, start: int, end: int) -> List[float]:
     return list(data[start * channels + ch:end * channels:channels])
 
 
 def _measure_seam(
-    data: array, channels: int, sample_rate: int, total: int, label: Any, junction: Optional[int], window: Optional[int],
+    data: Any, channels: int, sample_rate: int, total: int, label: Any, junction: Optional[int], window: Optional[int],
 ) -> Dict[str, Any]:
     """One seam. ``junction=None`` is the wrap: the end of the file, then
     its start."""
@@ -286,8 +286,8 @@ def _measure_seam(
                 worst = (key, one)
         entry["click"] = {"measured": True, **worst[1]}
 
-    if window is None:
-        reason = "no window_sec was given"
+    if window is None or window < 2:
+        reason = "no window_sec was given" if window is None else "window_sec is shorter than two samples"
         entry["level"] = {"measured": False, "reason": reason}
         entry["spectrum"] = {"measured": False, "reason": reason}
         return entry
@@ -346,10 +346,15 @@ def analyze_loop_seams(
         return result(_not_measured("the audio stream's sample rate or channel count could not be measured"))
     if sample_rate <= 0 or channels <= 0:
         return result(_not_measured("the audio stream's sample rate or channel count could not be measured"))
+    too_long = _not_measured(
+        f"the audio is too long to hold for the seam analysis (over {MAX_DECODED_BYTES // (1024 * 1024)} MiB of samples)"
+    )
     if duration_sec is not None and duration_sec * sample_rate * channels * 4 > MAX_DECODED_BYTES:
-        return result(_not_measured(f"the audio is too long to hold for the seam analysis (over {MAX_DECODED_BYTES // (1024 * 1024)} MiB of samples)"))
+        return result(too_long)
 
-    argv = ffmpeg_rawaudio_argv(ffmpeg_path, input_path, stream_select=f"0:{audio_stream['index']}")
+    argv = ffmpeg_rawaudio_argv(
+        ffmpeg_path, input_path, stream_select=f"0:{audio_stream['index']}", max_bytes=MAX_DECODED_BYTES,
+    )
     try:
         res = run_argv(argv, timeout=timeout, binary_stdout=True)
     except FileNotFoundError:
@@ -357,13 +362,17 @@ def analyze_loop_seams(
     if res.timed_out:
         raise error("TOOL_ERROR", "ffmpeg loop-seam decode timed out", argv=argv, timeout=timeout)
     raw = res.stdout_bytes
+    if len(raw) >= MAX_DECODED_BYTES:  # ffmpeg stopped at the cap (no duration, or a wrong one)
+        return result(too_long)
     usable = len(raw) - len(raw) % (4 * channels)
     if res.returncode != 0 or usable == 0:
         detail = (res.stderr or "").strip().splitlines()[-1:] or ["no samples"]
         return result(_not_measured(f"the audio could not be decoded: {detail[0]}"))
-    data = array("f")
-    data.frombytes(raw[:usable])
-    if sys.byteorder == "big":  # the samples are f32le
+    if sys.byteorder == "little":  # the samples are f32le: read them in place, no second copy
+        data: Any = memoryview(raw)[:usable].cast("f")
+    else:
+        data = array("f")
+        data.frombytes(raw[:usable])
         data.byteswap()
     total = len(data) // channels
 

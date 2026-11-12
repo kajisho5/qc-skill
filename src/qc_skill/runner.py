@@ -293,15 +293,22 @@ def ffmpeg_rawvideo_argv(
     return argv
 
 
-def ffmpeg_rawaudio_argv(executable: str, input_path: Path, *, stream_select: str) -> List[str]:
+def ffmpeg_rawaudio_argv(
+    executable: str, input_path: Path, *, stream_select: str, max_bytes: Optional[int] = None,
+) -> List[str]:
     """Build a fixed 'decode one audio stream to 32-bit float samples on
     stdout' ffmpeg invocation (the loop-seam measurement, ADR-025): the
-    stream's own sample rate and channel count, interleaved, little-endian."""
+    stream's own sample rate and channel count, interleaved, little-endian.
+    ``max_bytes`` makes ffmpeg stop writing once that much is out (``-fs``)."""
 
-    return [
+    argv = [
         executable, "-hide_banner", "-nostdin", "-v", "error", "-protocol_whitelist", "file",
-        "-i", str(input_path), "-map", stream_select, "-f", "f32le", "-acodec", "pcm_f32le", "-",
+        "-i", str(input_path), "-map", stream_select,
     ]
+    if max_bytes is not None:
+        argv.extend(["-fs", str(int(max_bytes))])
+    argv.extend(["-f", "f32le", "-acodec", "pcm_f32le", "-"])
+    return argv
 
 
 def ffmpeg_two_input_argv(

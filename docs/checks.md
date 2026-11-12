@@ -341,7 +341,8 @@ reason}` on its own:
 - **spectrum** `{max_diff_db, bands: [{centre_hz, before_db, after_db,
   diff_db, compared}], bands_compared, frame_samples, before_total_db,
   after_total_db, channel}`: octave bands centred on 62.5 Hz * 2^k (each a
-  factor of two wide, up to the Nyquist frequency) from Hann-windowed,
+  factor of two wide; the top one may be cut off at the Nyquist
+  frequency, so every frequency up to it is in a band) from Hann-windowed,
   non-overlapping frames of a power of two near a tenth of a second, the
   whole frames next to the seam. Each band is taken relative to its side's
   total, so the spectrum compares **shape**: a level change alone is the
@@ -352,9 +353,9 @@ reason}` on its own:
 
 A seam whose windows do not fit in the file (the wrap of a file shorter
 than two windows, a seam closer than a window to an end, a seam past the
-end, less than 50 ms of audio around it for the click, samples there
-that are not finite numbers) is not measured for that fact, with the
-reason. Nothing is padded.
+end, less than 50 ms of audio around it for the click, a `window_sec`
+shorter than two samples, samples there that are not finite numbers) is
+not measured for that fact, with the reason. Nothing is padded.
 
 **Policy checks** (each only when its limit is set; exactly the limit
 passes; values are compared as reported):
@@ -366,9 +367,9 @@ passes; values are compared as reported):
 | `audio.loop_seam_spectrum_within_limit` | `max_band_diff_db` (+ `window_sec`) | `AUDIO_LOOP_SEAM_SPECTRUM_MISMATCH` |
 
 Each check covers every seam: FAIL when any seam is over the limit,
-UNKNOWN when none is but a seam could not be measured (or the audio could
-not be decoded: no samples, decode failure, more than 256 MiB of float
-samples), PASS otherwise. `evidence.violations` is sorted by time; each
+UNKNOWN when none is but a seam could not be measured (or nothing could
+be: no audio stream, no samples, a decode failure, more than 128 MiB of
+float samples - ffmpeg is told to stop writing there), PASS otherwise. `evidence.violations` is sorted by time; each
 has `seam`, `time_sec`, the measured values and a `description` such as
 `2.003s wrap (end -> start): click ratio 12.2217 on channel 0 ...`; the
 finding's `timestamp` is the first violation's time.

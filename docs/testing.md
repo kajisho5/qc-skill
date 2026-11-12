@@ -103,8 +103,9 @@ exactly (e.g. `clean.mp4` is defined as 320x240 @25fps, 100 frames, mono
   every seam with seconds, a level step and a spectral step each fail
   only their own check, every limit exact at its edge, silence PASS, a
   click out of silence and a one-channel click FAIL, windows that do not
-  fit / seams past the end / no samples / a NaN sample / no ffmpeg
-  UNKNOWN, kind
+  fit / a window under two samples / seams past the end / no samples /
+  a NaN sample / audio over the sample cap / no audio stream / no ffmpeg
+  UNKNOWN, the top octave band reaching the Nyquist frequency, kind
   delivery and delivery_package.
 - **Security** (`test_security.py`, `test_security_injection.py`) -
   forbidden request keys (including nested), shell-metacharacter

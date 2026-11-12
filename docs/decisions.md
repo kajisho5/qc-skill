@@ -956,8 +956,11 @@ as well.
   Python. ffmpeg's `astats`/`ebur128` report a whole file or fixed
   windows, not two windows aligned on a seam, and the wrap only exists
   once the end and the start are joined, which is done in memory, never
-  written. More than 256 MiB of samples is not held (UNKNOWN), which is
-  far above a bed's length.
+  written. ffmpeg is told to stop writing after 128 MiB of samples
+  (`-fs`), so a file whose duration is missing or wrong cannot fill the
+  memory; such a file is UNKNOWN. The samples are read in place, not
+  copied. 128 MiB is about six minutes of 48 kHz stereo, far above a
+  bed's length.
 - **Click.** A discontinuity is a step or a kink; the second difference
   `x[i-1] - 2x[i] + x[i+1]` spikes at both and stays small on smooth
   material. The ratio of its largest value within 1 ms of the seam to
@@ -971,7 +974,9 @@ as well.
   silence stays a number in JSON). Unweighted RMS, not a K-weighted
   short-term loudness: the question is whether the two sides match, and
   both sides go through the same measure.
-- **Spectrum.** Octave bands (62.5 Hz * 2^k) of the same windows, each
+- **Spectrum.** Octave bands (62.5 Hz * 2^k; the top one cut off at
+  the Nyquist frequency, so nothing above the last full octave is left
+  out) of the same windows, each
   relative to its side's total, so this check sees the shape and leaves a
   plain level step to the level check: one cause, one finding. Bands
   more than 30 dB under the loudest are not compared (they are inaudible
@@ -983,6 +988,8 @@ as well.
   tried and dropped: channels out of phase on one side of a seam cancel
   there in the mix, and a seam whose channels each matched measured as a
   109 dB spectral "mismatch".
+- **No audio stream.** Every limit the rule sets is reported UNKNOWN
+  with that reason, not dropped.
 - **Seams that do not fit** (a file shorter than two windows, a seam
   within a window of an end or past it, less than 50 ms of audio around
   it for the click) are not measured for that fact, with the reason;
@@ -993,6 +1000,11 @@ as well.
   `description`; the finding's `timestamp` is the first violation's time.
   Values are rounded once when measured and judged as reported, so the
   limit's edge is exact for a caller reading the report.
+
+Also with this change: a NaN or an Infinity anywhere in a request (which
+`json.loads` accepts) is `INVALID_REQUEST` before any field is read. It
+used to reach a rule as a limit that every value fails (NaN) or passes
+(Infinity), or the identity hash as an uncaught error.
 
 The three checks join no `provides` Capability group (ADR-014
 precedent).

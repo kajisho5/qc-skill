@@ -317,3 +317,36 @@ def test_non_finite_samples_at_the_seam_are_unknown(workspace):
     assert _statuses(resp) == ("UNKNOWN", "UNKNOWN", "UNKNOWN")
     assert "not all finite" in checks_by_id(resp)[CHECK_IDS[0]]["reason"]
     json.dumps(measurements_by_id(resp)["audio.loop_seams"], allow_nan=False)  # no non-finite value in the seam facts
+
+
+def test_the_top_band_reaches_the_nyquist_frequency():
+    levels = dict(band_levels(_sine(8192, 7000, 16000), 16000, 1024))
+    assert max(levels) == 8000.0  # 5657 Hz to the 8 kHz Nyquist frequency, part of an octave
+    assert max(levels, key=levels.get) == 8000.0
+
+
+def test_window_shorter_than_two_samples_is_unknown(media, workspace):
+    resp = run(_doc(media["loop_seamless"], window_sec=0.00005, max_level_diff_db=1.5, max_band_diff_db=3), workspace)
+    checks = checks_by_id(resp)
+    assert checks[CHECK_IDS[1]]["status"] == checks[CHECK_IDS[2]]["status"] == "UNKNOWN"
+    assert "shorter than two samples" in checks[CHECK_IDS[1]]["reason"]
+
+
+def test_audio_over_the_sample_cap_is_unknown(media, workspace, monkeypatch):
+    from qc_skill.measurements import loop_seam
+
+    monkeypatch.setattr(loop_seam, "MAX_DECODED_BYTES", 4096)  # ffmpeg stops writing there, duration or not
+    resp = run(_doc(media["loop_seamless"], max_click_ratio=3), workspace)
+    check = checks_by_id(resp)[CHECK_IDS[0]]
+    assert check["status"] == "UNKNOWN" and "too long" in check["reason"]
+    # without a duration only ffmpeg's own stop (-fs) bounds the decode
+    rule = parse_request(_doc(media["loop_seamless"], max_click_ratio=3)).audio_rule.loop_seam
+    stream = {"index": 0, "sample_rate": "16000", "channels": 1}
+    value = loop_seam.analyze_loop_seams(CAPS.ffmpeg_path, media["loop_seamless"], stream, rule, duration_sec=None)[0].value
+    assert value["measured"] is False and "too long" in value["reason"]
+
+
+def test_no_audio_stream_reports_each_requested_limit_unknown(media, workspace):
+    resp = run(_doc(media["video_no_audio"], **LIMITS), workspace)
+    assert _statuses(resp) == ("UNKNOWN", "UNKNOWN", "UNKNOWN")
+    assert checks_by_id(resp)[CHECK_IDS[0]]["reason"] == "the input has no audio stream"

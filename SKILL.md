@@ -31,6 +31,8 @@ qc run <request.json | -> --json [--workspace DIR] [--allowed-input-root DIR]...
 Never send `command`, `argv`, `args`, `shell`, `cmd`, `exec`, `executable`,
 `filter`, `filter_complex`, or `env` - the request schema rejects all of
 them outright, at any nesting depth.
+Numbers must be finite: NaN or Infinity anywhere in the request is
+`INVALID_REQUEST`.
 
 For `kind: "delivery_package"`, `rules.delivery_package.cross_artifact`
 adds typed relationship checks across the named artifacts:

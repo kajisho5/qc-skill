@@ -81,6 +81,25 @@ def _find_forbidden(doc: Any, path: str = "") -> Optional[str]:
     return None
 
 
+def _find_non_finite(doc: Any, path: str = "") -> Optional[str]:
+    """The first NaN / Infinity anywhere in the document: ``json.loads``
+    accepts them, and no field means them."""
+
+    if isinstance(doc, float) and not math.isfinite(doc):
+        return path or "(document)"
+    if isinstance(doc, dict):
+        for k, v in doc.items():
+            found = _find_non_finite(v, f"{path}.{k}" if path else str(k))
+            if found:
+                return found
+    elif isinstance(doc, list):
+        for i, item in enumerate(doc):
+            found = _find_non_finite(item, f"{path}[{i}]")
+            if found:
+                return found
+    return None
+
+
 @dataclass
 class DeliveryArtifact:
     """One named file inside a ``kind: "delivery_package"`` request.
@@ -570,6 +589,9 @@ def parse_request(doc: Any) -> Request:
     forbidden = _find_forbidden(doc)
     if forbidden:
         raise error("INVALID_REQUEST", f"request contains a forbidden key: {forbidden}")
+    non_finite = _find_non_finite(doc)
+    if non_finite:
+        raise error("INVALID_REQUEST", f"{non_finite} must be a finite number (NaN and Infinity are not accepted)")
 
     unknown = set(doc) - ALLOWED_TOP_LEVEL_KEYS
     if unknown:
