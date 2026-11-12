@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.1.0 - 2026-11-12
+
+- feat: opt-in subtitle cue-text and subtitle-vs-speech checks (ADR-023) (#30) (7646a54)
+
 ## v1.0.1 - 2026-11-11
 
 - fix(release): Dependabot labels cannot raise the release level (#29) (8499abd)
