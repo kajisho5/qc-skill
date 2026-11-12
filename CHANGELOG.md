@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.3.0 - 2026-11-12
+
+- feat(audio): opt-in loop-seam checks (ADR-025) (#33) (73b4b7c)
+
 ## v1.2.0 - 2026-11-12
 
 - feat(video): opt-in stinger cut-point checks (ADR-024) (#32) (a475cb9)
