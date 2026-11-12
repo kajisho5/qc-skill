@@ -187,6 +187,76 @@ A refused alignment, a missing `reference_video` or a missing libvmaf is
 `UNKNOWN`, never `PASS` or `FAIL`; a missing libvmaf does not stop SSIM
 and PSNR from running.
 
+### Opt-in stinger cut point (ADR-024)
+
+A stinger is a graphic with alpha laid over a join; the clips switch at
+its cut point, the frame where the graphic covers the whole picture.
+`VideoRule.stinger` (any `VideoRule`: `kind: video`, `delivery.video`, a
+`delivery_package` artifact's `video`) checks it. `cut_point` and `cover`
+are the stinger maker's statement (stinger.json); the caller reads the
+sidecar and passes both - qc-skill opens no sidecar.
+
+| field | meaning |
+|---|---|
+| `cut_point` | required. Seconds on the stinger's own timeline (from its first frame). It must name a frame: `cut_point * frame_rate` within 1/1000 of a whole frame, else UNKNOWN |
+| `cover` | optional `{start, end}`, the window the maker says is fully covered: the frames at `start <= t < end` |
+| `file` | optional path to the stinger, resolved and fingerprinted like `input` (its content, not its path, joins the identity; `provenance.stinger_input`). Without it the input **is** the stinger; with it the input is a delivered video and the alpha is read from `file` |
+| `cut_at` | optional, needs `file`: seconds on the delivered video's timeline, one per join (video-editing-skill's `stinger.joins[].cut_at`) |
+| `max_cut_frame_difference` | needed with `cut_at`, no default: the largest mean absolute difference (8-bit RGB, 0-255) allowed between the delivered frame at a cut and the stinger's frame at its cut point |
+
+**Measurements** (`src/qc_skill/measurements/stinger.py`):
+
+| id | source | notes |
+|---|---|---|
+| `video.stinger_cut_point_alpha` | ffmpeg `extractplanes=a` of one frame | `{source: input\|stinger_file, cut_point, frame, frame_time, frame_rate, pix_fmt, alpha_format, alpha_bit_depth, width, height, pixels, pixels_below, below_fraction, min_alpha, min_alpha_255, threshold: {min_alpha_255: 253, scale: 255, native}, measured: true}` or `{measured: false, reason}` |
+| `video.stinger_cut_frames` | ffmpeg rawvideo RGB of single frames | `{stinger_frame: {frame, frame_time, scaled_to, source_size}, cuts: [{cut_at, frame, frame_time, difference, difference_before, difference_after, measured}]}`; an unmeasurable cut has `{measured: false, reason}` |
+
+The frame at a time `t` is frame `round(t * frame_rate)` of the stream
+(exact fractions from ffprobe's `r_frame_rate`). It is decoded by an
+input seek to a quarter frame before it, and the decoded frame's own
+timestamp must name that frame, else the measurement is refused with the
+time it did land on. The alpha plane is read at its native bit depth (8,
+10, 12 or 16 bit; ProRes 4444 decodes at 12). **The opaque rule is
+video-editing-skill's:** a pixel covers when its alpha is at least 253 of
+255 on that scale (`alpha * 255 >= 253 * max`: 253 at 8 bit, 1015 at 10,
+4063 at 12, 65021 = 253 * 257 at 16), and the frame covers when no pixel
+is below. A stream whose pixel format has no alpha channel (by ffprobe's
+own pixel-format flags) is not measured: an alpha that was not read is
+never taken as opaque. A VP8/VP9 WebM whose decoder does not expose its
+alpha reports `yuv420p` and is UNKNOWN for the same reason.
+
+For a delivered video, each cut frame and its two neighbours are
+compared with the stinger's frame at its cut point, scaled (bicubic) to
+the delivered size: under full cover the delivered frame is the
+stinger's frame, so `difference` is the delivery's encoding loss, while a
+stinger placed off the cut shows the clips through it.
+`difference_before`/`after` are context only.
+
+**Policy checks:**
+
+| check_id | rule field(s) | finding |
+|---|---|---|
+| `video.stinger_cut_point_in_cover` | `stinger.cover` | `VIDEO_STINGER_CUT_POINT_OUTSIDE_COVER` when `cut_point` is not in `[start, end)` (the statement contradicts itself; nothing is measured) |
+| `video.stinger_opaque_at_cut_point` | `stinger.cut_point` | `VIDEO_STINGER_NOT_OPAQUE` when any pixel of that frame is below 253/255 (evidence: frame, pixels, pixels_below, min_alpha); UNKNOWN when the frame or its alpha could not be read |
+| `video.stinger_cut_frame_matches` | `stinger.file`, `cut_at`, `max_cut_frame_difference` | `VIDEO_STINGER_CUT_FRAME_MISMATCH` when a cut frame differs from the stinger's frame by more than the limit (exactly the limit passes); UNKNOWN when a cut frame could not be read and none failed |
+
+Every finding carries the cut time in seconds (`timestamp`) and the
+measured values; a violation's `description` reads like `2.000s frame 60
+differs from the stinger's frame at its cut point by 40.333 ...`.
+
+Why not `video.cuts_match_expected`: a cut under a stinger is hidden by
+design, and scdet reports the graphic's own steps instead. On the test
+edit it reports 1.5, 1.933, 2.0, 2.1 and 2.7 s for one join at 2.0 s (a
+stinger placed a frame late moves every step by a frame, still within
+the default one-frame tolerance); on a smooth wipe it reports nothing.
+Neither says where the clips switch.
+
+Suggested `max_cut_frame_difference`: measure your own delivery once. On
+the 64x36 test edit (H.264 crf 18) the cut frame measures 0.0 and a
+stinger one frame late 40.3 (a quarter of the picture shows through);
+for textured graphics in a lossy delivery, start around 2-5 and keep it
+well under what a frame off measures.
+
 ## Audio (`kind: "audio"`, and `kind: "delivery"` when an audio stream is present)
 
 **Measurements** (`src/qc_skill/measurements/audio.py`):

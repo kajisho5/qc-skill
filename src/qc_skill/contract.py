@@ -29,12 +29,15 @@ from .rules import (
     POS_TAGS,
     SUBTITLE_PRESETS,
     SourceCue,
+    StingerCover,
+    StingerRule,
     SubtitleRule,
     TextRegion,
     TimelineIntegrityRule,
     TimelineSegment,
     VideoRule,
 )
+from .measurements.stinger import ALPHA_SCALE, OPAQUE_MIN_ALPHA
 from .schemas import VALID_ARTIFACT_TYPES
 
 SUPPORTED_OPERATIONS = ["inspect", "check", "validate"]
@@ -52,6 +55,8 @@ SUPPORTED_VIDEO_MEASUREMENTS = [
     "video.scene_cuts", "video.text_regions",
     # opt-in, only when VideoRule.reference_metrics is set (ADR-021)
     "video.reference_alignment", "video.vmaf", "video.ssim", "video.psnr_db",
+    # opt-in, only when VideoRule.stinger is set (ADR-024)
+    "video.stinger_cut_point_alpha", "video.stinger_cut_frames",
 ]
 
 SUPPORTED_AUDIO_MEASUREMENTS = [
@@ -93,6 +98,7 @@ SUPPORTED_CHECKS = [
     "video.luminance_within_legal_range",
     "video.photosensitive_flash_within_limit", "video.cuts_match_expected", "video.text_legible",
     "video.vmaf_meets_minimum", "video.ssim_meets_minimum", "video.psnr_meets_minimum",
+    "video.stinger_cut_point_in_cover", "video.stinger_opaque_at_cut_point", "video.stinger_cut_frame_matches",
     "audio.stream_present_matches_expected", "audio.decodes_without_errors", "audio.no_clipping",
     "audio.sample_rate_matches_expected", "audio.channels_match_expected", "audio.channel_layout_matches_expected",
     "audio.leading_silence_within_tolerance", "audio.trailing_silence_within_tolerance",
@@ -147,6 +153,9 @@ FINDING_CATALOG = [
     ("VIDEO_VMAF_BELOW_MINIMUM", "FAIL"),
     ("VIDEO_SSIM_BELOW_MINIMUM", "FAIL"),
     ("VIDEO_PSNR_BELOW_MINIMUM", "FAIL"),
+    ("VIDEO_STINGER_CUT_POINT_OUTSIDE_COVER", "FAIL"),
+    ("VIDEO_STINGER_NOT_OPAQUE", "FAIL"),
+    ("VIDEO_STINGER_CUT_FRAME_MISMATCH", "FAIL"),
     ("AUDIO_STREAM_MISSING", "FAIL"),
     ("AUDIO_STREAM_UNEXPECTED", "FAIL"),
     ("AUDIO_DECODE_ERROR", "FAIL"),
@@ -270,6 +279,10 @@ UNGROUPED_CHECKS = [
     "video.vmaf_meets_minimum",
     "video.ssim_meets_minimum",
     "video.psnr_meets_minimum",
+    # ADR-024: no Capability id for stinger transitions exists in CAPABILITY_MATRIX.md yet.
+    "video.stinger_cut_point_in_cover",
+    "video.stinger_opaque_at_cut_point",
+    "video.stinger_cut_frame_matches",
     # ADR-023: no Capability id for cue-text or subtitle-vs-speech checks exists in
     # CAPABILITY_MATRIX.md yet.
     "subtitle.cue_boundaries_on_word_boundaries",
@@ -358,6 +371,8 @@ _NESTED_RULE_NAMES = {
     SourceCue: "timeline_source_cue",
     TextRegion: "text_region",
     CoveredInterval: "subtitle_covered_interval",
+    StingerRule: "video_stinger",
+    StingerCover: "video_stinger_cover",
 }
 
 
@@ -401,6 +416,8 @@ def rules_contract_schema() -> Dict[str, Any]:
         "timeline_source_cue": _rule_schema(SourceCue),
         "text_region": _rule_schema(TextRegion),
         "subtitle_covered_interval": _rule_schema(CoveredInterval),
+        "video_stinger": _rule_schema(StingerRule),
+        "video_stinger_cover": _rule_schema(StingerCover),
     }
 
 
@@ -443,6 +460,10 @@ def skill_contract() -> Dict[str, Any]:
         "inputs": {
             "input": "media or subtitle file path (one primary artifact per request; not accepted for kind=delivery_package)",
             "subtitle": "companion subtitle file path (kind=delivery only)",
+            "stinger_file": (
+                "rules.video.stinger.file: the stinger (a video with alpha) when the input is a delivered video - "
+                "resolved and fingerprinted like input; without it the input is the stinger itself (ADR-024)"
+            ),
             "reference_video": (
                 "companion video file path: for kind=subtitle, the duration comparison; for kind=video/delivery, "
                 "the reference that VideoRule.reference_metrics (VMAF/SSIM/PSNR) compares against - read only when "
@@ -476,6 +497,14 @@ def skill_contract() -> Dict[str, Any]:
             ),
             "pos_tags": list(POS_TAGS),
             "presets": SUBTITLE_PRESETS,
+        },
+        "stinger": {
+            "rule": "rules.video.stinger: {cut_point, cover?: {start, end}, file?, cut_at?: [seconds], max_cut_frame_difference?} (ADR-024)",
+            "cut_point": "seconds on the stinger's own timeline, from its stinger.json; must be on a frame (within 1/1000 of one)",
+            "opaque_rule": f"every pixel of the stinger's frame at cut_point has alpha >= {OPAQUE_MIN_ALPHA}/{ALPHA_SCALE} "
+                           "(alpha * 255 >= 253 * max at its native bit depth; video-editing-skill's rule)",
+            "cut_frames": "with file + cut_at: mean absolute difference (8-bit RGB, 0-255) of the input's frame at each cut_at and "
+                          "the stinger's frame at cut_point scaled to the input's size; no default for max_cut_frame_difference",
         },
         "findings": findings_contract_catalog(),
         "formats": SUPPORTED_FORMATS,

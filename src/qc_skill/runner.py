@@ -264,9 +264,12 @@ def ffmpeg_rawvideo_argv(
     seek_sec: Optional[float] = None,
     max_frames: Optional[int] = None,
     log_level: str = "info",
+    keep_pix_fmt: bool = False,
 ) -> List[str]:
     """Build a fixed 'decode, filter, write raw frames to stdout' ffmpeg
-    invocation (``pix_fmt=None`` writes nothing: ``-f null``).
+    invocation (``pix_fmt=None`` writes nothing: ``-f null``;
+    ``keep_pix_fmt=True`` writes the filter graph's own output format,
+    e.g. an alpha plane at its native bit depth - ADR-024).
 
     Like ``ffmpeg_analysis_argv``, ``filters`` are internally constructed
     expressions whose only caller-derived parts are numbers that
@@ -281,7 +284,9 @@ def ffmpeg_rawvideo_argv(
         argv.extend(["-frames:v", str(int(max_frames))])
     if filters:
         argv.extend(["-vf", ",".join(filters)])
-    if pix_fmt is None:
+    if keep_pix_fmt:
+        argv.extend(["-f", "rawvideo", "-"])
+    elif pix_fmt is None:
         argv.extend(["-f", "null", "-"])
     else:
         argv.extend(["-f", "rawvideo", "-pix_fmt", pix_fmt, "-"])

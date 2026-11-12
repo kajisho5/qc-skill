@@ -5,7 +5,7 @@ Written from a read-only audit of this repository on 2026-10-30. Each step below
 
 ## Where it stands
 
-v1.1.0, Python 3.9+ stdlib. contract, doctor, run (inspect/check/validate; video/audio/subtitle/delivery/delivery_package; 62 checks after step 8). 29 test modules, CI on 3 OSes x 2 Pythons. Already an OS registry fixture.
+v1.2.0, Python 3.9+ stdlib. contract, doctor, run (inspect/check/validate; video/audio/subtitle/delivery/delivery_package; 65 checks after step 9). 30 test modules, CI on 3 OSes x 2 Pythons. Already an OS registry fixture.
 
 ## What this repository owns
 
@@ -37,6 +37,10 @@ Agent wires qc/check and qc/inspect (ADR-032); provides[] publishes qc/check as 
   - Done when: low-contrast and undersized regions FAIL, box outside frame UNKNOWN
 - [x] **8. Subtitle vs. speech** — opt-in `transcript` + `word_boundary_tolerance_sec` / `max_cue_lead_sec` / `max_uncovered_speech_sec` / `forbidden_line_start_pos|phrases`, `max_total_chars`, `min_cue_chars` (WARN), opt-in `preset: "ja"` (ADR-023)
   - Done when: each check PASS/FAIL/UNKNOWN with times in evidence; transcripts without `index`/`pos` still read
+- [x] **9. Stinger cut-point check** — handed over by video-editing-skill (step 13, its ADR-032) and hyperframes-skill (step 15): opt-in `VideoRule.stinger {cut_point, cover}` from stinger.json → `video.stinger_opaque_at_cut_point` (every pixel's alpha >= 253/255 at the cut frame, video-editing-skill's rule; `VIDEO_STINGER_NOT_OPAQUE`) and `video.stinger_cut_point_in_cover`; with `file` + `cut_at` + `max_cut_frame_difference` on a delivered video, `video.stinger_cut_frame_matches` (`VIDEO_STINGER_CUT_FRAME_MISMATCH`); no alpha / unreadable frame UNKNOWN (ADR-024) ([#32](https://github.com/kajisho5/qc-skill/pull/32))
+  - Done when: a stinger's cut frame PASS, a partly covered frame FAIL with the pixels below, 253 PASS / 252 FAIL, no alpha UNKNOWN; a delivered edit with the stinger on the cut PASS, one frame late FAIL
+- [ ] **10. Loop-seam check for audio** — handed over by sound-design-skill (step 7, its ADR-011): for a file declared loopable, the seam end → start (and any internal seams) measured for a click, a level step and a spectral step; every threshold a rule field with no default
+  - Done when: a seamless loop and a bed repeated 10 times PASS, a naive cut FAIL with the click, each threshold's edge exact, an unreadable or too-short file UNKNOWN
 
 ## Boundaries
 

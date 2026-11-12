@@ -118,9 +118,18 @@ def test_rule_limits_are_the_thresholds_not_the_defaults(media, workspace):
     assert checks["subtitle.cue_duration_within_limit"]["status"] == "WARN"
     assert checks["subtitle.gaps_within_limit"]["status"] == "WARN"
 
+    # Above every engine default (42 chars, 7 s, 5 s) but within the rule's own limits: passes only when the
+    # rule's limits are the thresholds, so a min(rule, default) implementation would WARN here.
+    above_defaults = workspace / "rule_limits_above_defaults.srt"
+    above_defaults.write_text(
+        "1\n00:00:00,000 --> 00:00:08,000\n"
+        + ("x" * 50)
+        + "\n\n2\n00:00:14,000 --> 00:00:15,000\nshort\n\n",
+        encoding="utf-8",
+    )
     loose = {
-        "operation": "check", "kind": "subtitle", "input": str(srt),
-        "rules": {"subtitle": {"max_line_length": 60, "max_cue_duration_sec": 4.0, "max_gap_sec": 4.0}},
+        "operation": "check", "kind": "subtitle", "input": str(above_defaults),
+        "rules": {"subtitle": {"max_line_length": 60, "max_cue_duration_sec": 9.0, "max_gap_sec": 7.0}},
     }
     checks = checks_by_id(run(loose, workspace))
     assert checks["subtitle.line_length_within_limit"]["status"] == "PASS"

@@ -36,6 +36,9 @@ exactly (e.g. `clean.mp4` is defined as 320x240 @25fps, 100 frames, mono
 | `ref_master.mp4` | 320x240 @25fps, 2 s, crf 1 - the reference for VMAF/SSIM/PSNR (and, compared with itself, the identical pair) |
 | `ref_degraded.mp4`, `ref_small.mp4` | the master blurred + crf 51 (below every default threshold) / at 160x120 (compared after upscaling) |
 | `ref_30fps.mp4`, `ref_short.mp4` | 30 fps / first 25 frames only - refused alignments (UNKNOWN) |
+| `stinger_wipe.mov`, `stinger_prores.mov` | 64x36 @30fps, 1.2 s stinger with alpha (QuickTime Animation 8-bit / ProRes 4444): left half covered for frames 0-12, three quarters for 13-14, the whole picture for 15-17 (cut point 0.5 s), right half after |
+| `stinger_edge.mov` | frame 10 every alpha exactly 253 (opaque by the rule), frame 20 one pixel at 252 (not) |
+| `stinger_edit.mp4`, `stinger_edit_late.mp4` | red 2 s + blue 2 s joined at frame 60 (2.0 s), `stinger_wipe` laid over the join with its frame 15 on frame 60 / one frame late |
 
 ## Test matrix
 
@@ -83,6 +86,13 @@ exactly (e.g. `clean.mp4` is defined as 320x240 @25fps, 100 frames, mono
   `text`/`word`, skipped words, unreadable files; `min_cue_chars` is a
   WARN; the `ja` preset fills only unset fields; the transcript's content,
   not its path, enters the identity; delivery_package support.
+- **Stinger cut point** (`test_stinger_checks.py`) - ADR-024: the
+  opaque rule at every bit depth (253 passes, 252 fails; ProRes 4444's
+  12-bit alpha), the stated cover window's edges, no alpha / a cut point
+  between frames / past the end UNKNOWN; a delivered edit's cut frame
+  against the stinger (placed right PASS, one frame late FAIL, exactly
+  the limit PASS), unreadable or missing stinger files, the stinger's
+  content in the identity, kind delivery and delivery_package.
 - **Security** (`test_security.py`, `test_security_injection.py`) -
   forbidden request keys (including nested), shell-metacharacter
   filenames, path traversal, prefix collision, symlink escape (input and
