@@ -323,8 +323,12 @@ tolerant of older and newer files:
   labels qc-skill knows are `noun, pronoun, verb, adjective, adverb,
   particle, auxiliary, conjunction, interjection, prefix, suffix, symbol,
   other`;
-- `interpolated`, `timing_interpolated` or `estimated` set to `true`
-  marks an estimated timing;
+- `timing: "interpolated"` (transcription-skill 0.9.0+, a
+  character-share estimate on dictionary-segmented words) marks an
+  estimated timing; `"measured"` or no `timing` key is a measured /
+  engine timing; a boolean `interpolated`, `timing_interpolated` or
+  `estimated` set to `true` counts as interpolated too;
+- a segment with `words: null` contributes no words;
 - a word without text, or without numeric finite `start`/`end` with
   `end >= start`, is skipped and counted.
 

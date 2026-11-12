@@ -805,9 +805,10 @@ is out of scope, `not_provided`). The transcript a pipeline already has
   paths (contract `identity.excludes`). It is a rule field rather than a
   top-level request key because it only matters to the subtitle rule that
   names it, and a delivery package can name one per subtitle artifact.
-- **Tolerant reading.** transcription-skill is adding a whole-transcript
-  `index`, an optional coarse `pos` and possibly an interpolated-timing
-  flag; older files have none of them. The reader takes `text` or
+- **Tolerant reading.** transcription-skill 0.9.0 adds a contiguous
+  whole-transcript `index` on every word, and, on dictionary-segmented
+  words only, a coarse `pos` and `timing: "measured" | "interpolated"`;
+  older files have none of them. The reader takes `text` or
   `word`, keeps `index` when it is an integer and always derives
   `position` (reading order over every word entry, so the two agree when
   both exist), reads `pos` only when present, and skips (and counts)

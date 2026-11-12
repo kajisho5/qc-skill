@@ -472,7 +472,7 @@ def skill_contract() -> Dict[str, Any]:
         "subtitle_speech": {
             "transcript": (
                 "rules.subtitle.transcript: path to a word-timed transcript JSON (segments[].words[] or words[], "
-                "each {text|word, start, end}; optional index, pos, interpolated) - read, never produced (ADR-023)"
+                "each {text|word, start, end}; optional index, pos, timing) - read, never produced (ADR-023)"
             ),
             "pos_tags": list(POS_TAGS),
             "presets": SUBTITLE_PRESETS,

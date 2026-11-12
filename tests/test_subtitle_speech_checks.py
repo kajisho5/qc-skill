@@ -97,6 +97,25 @@ def test_keeps_the_transcripts_own_index_and_interpolation_flags(tmp_path):
     assert [w["interpolated"] for w in words] == [False, True, True]
 
 
+def test_reads_the_released_transcription_format_with_null_words_and_timing(tmp_path):
+    # transcription-skill 0.9.0+: contiguous index, `words: null` segments consume no
+    # numbers, `pos` and `timing` only on dictionary words
+    doc = {"segments": [
+        {"text": "学校に", "words": [
+            {"word": "学校", "start": 1.0, "end": 1.4, "index": 0, "pos": "noun", "timing": "measured"},
+            {"word": "に", "start": 1.4, "end": 1.5, "index": 1, "pos": "particle", "timing": "interpolated"},
+        ]},
+        {"text": "(music)", "words": None},
+        {"text": "hello", "words": [{"word": "hello", "start": 3.0, "end": 3.4, "index": 2}]},
+    ]}
+    path = tmp_path / "t.json"
+    path.write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
+    words = read_transcript(path).words
+    assert [(w["text"], w["index"], w["position"]) for w in words] == [("学校", 0, 0), ("に", 1, 1), ("hello", 2, 2)]
+    assert [w["pos"] for w in words] == ["noun", "particle", None]
+    assert [w["interpolated"] for w in words] == [False, True, False]
+
+
 def test_unusable_words_are_skipped_and_counted_and_positions_stay_aligned(tmp_path):
     doc = [{"words": [
         {"text": "ok", "start": 0.0, "end": 0.2},

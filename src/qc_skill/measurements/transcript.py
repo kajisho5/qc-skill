@@ -14,8 +14,13 @@ the file, and reads them tolerantly:
   up with ``index`` when the transcript carries one.
 * ``pos`` (a coarse part-of-speech label) is read when it is a string and
   lower-cased; nothing is inferred when it is missing.
-* ``interpolated`` / ``timing_interpolated`` / ``estimated`` set to
-  ``true`` marks a word whose timing was estimated rather than aligned.
+* ``timing: "interpolated"`` (transcription-skill 0.9.0+: a
+  character-share estimate on dictionary-segmented words) marks a word
+  whose timing was estimated rather than measured; ``"measured"`` or no
+  ``timing`` key means a measured / engine timing. A boolean
+  ``interpolated`` / ``timing_interpolated`` / ``estimated`` set to
+  ``true`` is read the same way.
+* A segment whose ``words`` is ``null`` contributes no words.
 * A top-level ``words`` list is read when no segment carries words; a
   top-level JSON list is read as a list of segments (or of words).
 
@@ -114,7 +119,10 @@ def read_transcript(path: Path) -> TranscriptReadResult:
             "start": start,
             "end": end,
             "pos": pos.strip().lower() if isinstance(pos, str) and pos.strip() else None,
-            "interpolated": any(entry.get(flag) is True for flag in _INTERPOLATION_FLAGS),
+            "interpolated": (
+                entry.get("timing") == "interpolated"
+                or any(entry.get(flag) is True for flag in _INTERPOLATION_FLAGS)
+            ),
         })
     return result
 
