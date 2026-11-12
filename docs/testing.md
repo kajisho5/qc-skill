@@ -76,6 +76,13 @@ exactly (e.g. `clean.mp4` is defined as 320x240 @25fps, 100 frames, mono
   SSIM/PSNR still scored. The real VMAF tests skip when the host ffmpeg
   has no libvmaf, unless `QC_REQUIRE_LIBVMAF=1` (set on the CI job whose
   ffmpeg has it), which makes them fail instead.
+- **Subtitle vs. speech** (`test_subtitle_speech_checks.py`) - ADR-023:
+  each of the six checks passes, fails, sits on its tolerance edge and
+  turns UNKNOWN without a transcript (or without `pos`, or with an
+  interpolated timing); transcripts with and without `index`/`pos`/
+  `text`/`word`, skipped words, unreadable files; `min_cue_chars` is a
+  WARN; the `ja` preset fills only unset fields; the transcript's content,
+  not its path, enters the identity; delivery_package support.
 - **Security** (`test_security.py`, `test_security_injection.py`) -
   forbidden request keys (including nested), shell-metacharacter
   filenames, path traversal, prefix collision, symlink escape (input and

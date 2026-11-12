@@ -21,10 +21,13 @@ from .rules import (
     ArtifactDependencyRule,
     ArtifactDurationConsistencyRule,
     AudioRule,
+    CoveredInterval,
     CrossArtifactRule,
     DeliveryArtifactRule,
     DeliveryPackageRule,
     DeliveryRule,
+    POS_TAGS,
+    SUBTITLE_PRESETS,
     SourceCue,
     SubtitleRule,
     TextRegion,
@@ -66,6 +69,10 @@ SUPPORTED_SUBTITLE_MEASUREMENTS = [
     "subtitle.invalid_control_characters", "subtitle.duration_sec", "subtitle.coverage_ratio",
     "subtitle.duration_delta_sec", "subtitle.cue_density_per_min", "subtitle.excessive_line_length",
     "subtitle.excessive_cue_duration", "subtitle.gaps",
+    # opt-in, only when a SubtitleRule asks for a cue-text or speech check / names a transcript (ADR-023)
+    "subtitle.cue_texts", "subtitle.transcript_words", "subtitle.transcript_word_count",
+    "subtitle.transcript_skipped_word_count", "subtitle.transcript_pos_word_count",
+    "subtitle.transcript_interpolated_word_count",
 ]
 
 SUPPORTED_DELIVERY_MEASUREMENTS = ["delivery.extension"] + SUPPORTED_VIDEO_MEASUREMENTS + SUPPORTED_AUDIO_MEASUREMENTS + SUPPORTED_SUBTITLE_MEASUREMENTS
@@ -96,6 +103,8 @@ SUPPORTED_CHECKS = [
     "subtitle.line_length_within_limit", "subtitle.cue_duration_within_limit", "subtitle.gaps_within_limit",
     "subtitle.duration_matches_video", "subtitle.coverage_within_limit",
     "subtitle.timeline_mapping_matches_source",
+    "subtitle.cue_boundaries_on_word_boundaries", "subtitle.cue_not_early", "subtitle.speech_covered",
+    "subtitle.no_forbidden_line_start", "subtitle.total_chars_within_limit", "subtitle.cue_chars_meet_minimum",
     "delivery.file_size_within_limit", "delivery.extension_matches_expected", "delivery.container_matches_expected",
     "delivery_package.artifact_present", "delivery_package.artifact_size_within_limit",
     "delivery_package.artifact_extension_matches_expected",
@@ -166,6 +175,12 @@ FINDING_CATALOG = [
     ("SUBTITLE_COVERAGE_LOW", "WARN"),
     ("SUBTITLE_TIMELINE_CUE_COUNT_MISMATCH", "FAIL"),
     ("SUBTITLE_TIMELINE_MAPPING_MISMATCH", "FAIL"),
+    ("SUBTITLE_CUE_BOUNDARY_INSIDE_WORD", "FAIL"),
+    ("SUBTITLE_CUE_EARLY", "FAIL"),
+    ("SUBTITLE_SPEECH_UNCOVERED", "FAIL"),
+    ("SUBTITLE_FORBIDDEN_LINE_START", "FAIL"),
+    ("SUBTITLE_CUE_TOO_MANY_CHARS", "FAIL"),
+    ("SUBTITLE_CUE_TOO_FEW_CHARS", "WARN"),
     ("DELIVERY_FILE_TOO_SMALL", "FAIL"),
     ("DELIVERY_FILE_TOO_LARGE", "FAIL"),
     ("DELIVERY_EXTENSION_MISMATCH", "FAIL"),
@@ -255,6 +270,14 @@ UNGROUPED_CHECKS = [
     "video.vmaf_meets_minimum",
     "video.ssim_meets_minimum",
     "video.psnr_meets_minimum",
+    # ADR-023: no Capability id for cue-text or subtitle-vs-speech checks exists in
+    # CAPABILITY_MATRIX.md yet.
+    "subtitle.cue_boundaries_on_word_boundaries",
+    "subtitle.cue_not_early",
+    "subtitle.speech_covered",
+    "subtitle.no_forbidden_line_start",
+    "subtitle.total_chars_within_limit",
+    "subtitle.cue_chars_meet_minimum",
 ]
 
 
@@ -334,6 +357,7 @@ _NESTED_RULE_NAMES = {
     TimelineSegment: "timeline_segment",
     SourceCue: "timeline_source_cue",
     TextRegion: "text_region",
+    CoveredInterval: "subtitle_covered_interval",
 }
 
 
@@ -376,6 +400,7 @@ def rules_contract_schema() -> Dict[str, Any]:
         "timeline_segment": _rule_schema(TimelineSegment),
         "timeline_source_cue": _rule_schema(SourceCue),
         "text_region": _rule_schema(TextRegion),
+        "subtitle_covered_interval": _rule_schema(CoveredInterval),
     }
 
 
@@ -444,6 +469,14 @@ def skill_contract() -> Dict[str, Any]:
         },
         "checks": SUPPORTED_CHECKS,
         "rules": rules_contract_schema(),
+        "subtitle_speech": {
+            "transcript": (
+                "rules.subtitle.transcript: path to a word-timed transcript JSON (segments[].words[] or words[], "
+                "each {text|word, start, end}; optional index, pos, timing) - read, never produced (ADR-023)"
+            ),
+            "pos_tags": list(POS_TAGS),
+            "presets": SUBTITLE_PRESETS,
+        },
         "findings": findings_contract_catalog(),
         "formats": SUPPORTED_FORMATS,
         "delivery_package": {"artifact_types": sorted(VALID_ARTIFACT_TYPES)},

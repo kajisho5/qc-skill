@@ -9,7 +9,9 @@ line length is acceptable is a Rule (rules.py), not decided here.
 
 from __future__ import annotations
 
+import html
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
@@ -168,6 +170,37 @@ class SubtitleParseResult:
 
 
 _CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+_MARKUP_TAG_RE = re.compile(r"<[^>\n]*>")
+_OVERRIDE_BLOCK_RE = re.compile(r"\{[^}\n]*\}")
+
+
+def visible_lines(cue: Cue, fmt: str) -> List[str]:
+    """The cue's lines as a viewer reads them: SRT/WebVTT inline tags
+    (``<i>``, ``<c.x>``, ``<00:01.000>``) and ``{...}`` override blocks
+    removed, WebVTT character references decoded, ASS hard spaces turned
+    into spaces, and each line stripped at both ends. ASS override blocks
+    were already removed by the parser."""
+
+    out = []
+    for line in cue.lines:
+        if fmt == "ass":
+            text = line.replace("\\h", " ")
+        else:
+            text = _OVERRIDE_BLOCK_RE.sub("", _MARKUP_TAG_RE.sub("", line))
+            if fmt == "vtt":
+                text = html.unescape(text)
+        out.append(text.strip())
+    return out
+
+
+def count_chars(lines: List[str]) -> int:
+    """ADR-023 character count: Unicode code points of each line after NFKC
+    normalisation (so half-width katakana and full-width Latin count the
+    same as their standard forms), line breaks not counted, spaces inside
+    a line counted. Every code point counts as one, whatever its display
+    width - this is not a full-width/half-width display measure."""
+
+    return sum(len(unicodedata.normalize("NFKC", line)) for line in lines)
 
 
 def measure_subtitle(
@@ -177,6 +210,7 @@ def measure_subtitle(
     max_line_length: int = 42,
     max_cue_duration: float = 7.0,
     max_gap_sec: float = 5.0,
+    include_cue_texts: bool = False,
 ) -> List[QCMeasurement]:
     parsed = parse_subtitle_file(path)
     cues = parsed.cues
@@ -191,6 +225,20 @@ def measure_subtitle(
             source="OBSERVED", notes="raw parsed cue timing, in file order - start/end are null for a cue with a timestamp error",
         ),
     ]
+    if include_cue_texts:
+        cue_texts = []
+        for c in cues:
+            lines = visible_lines(c, parsed.format)
+            cue_texts.append({
+                "index": c.index, "cue_id": c.cue_id, "start": c.start, "end": c.end,
+                "lines": lines, "chars": count_chars(lines),
+            })
+        measurements.append(
+            QCMeasurement(
+                "subtitle.cue_texts", "subtitle", "cue_texts", cue_texts, source="OBSERVED",
+                notes="opt-in (ADR-023): visible text per cue in file order, markup removed; chars = NFKC code points, line breaks not counted",
+            )
+        )
 
     invalid_timestamps = []
     for cue in cues:

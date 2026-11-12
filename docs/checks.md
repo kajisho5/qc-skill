@@ -234,8 +234,9 @@ come from the request.
 ## Subtitle (`kind: "subtitle"`, and `kind: "delivery"` via the `subtitle` field)
 
 Formats: SRT, WebVTT, ASS/SSA (cue timing and text only - styling/tags are
-stripped, never evaluated). Content/wording is never evaluated by an AI or
-otherwise.
+stripped, never evaluated). Content/wording is never judged by an AI or
+otherwise; the opt-in ADR-023 checks below only compare cue text
+character by character with words and phrases the caller supplies.
 
 **Measurements** (`src/qc_skill/measurements/subtitle.py`): `subtitle.exists`,
 `subtitle.format`, `subtitle.cue_count`, `subtitle.cues` (raw parsed
@@ -292,6 +293,127 @@ expected delivery position cannot be computed. Because this is a
 standalone `kind: "subtitle"`, `kind: "delivery"`'s `subtitle` sub-rule,
 and `kind: "delivery_package"`'s per-artifact `subtitle` sub-rule - no
 kind-specific plumbing was added for it.
+
+### Cue text limits and subtitle-vs-speech checks (ADR-023)
+
+Six opt-in `SubtitleRule` checks. Each runs only when its own field is
+set; with none set, nothing below is measured or reported. Like
+`timeline_integrity`, they work wherever a `SubtitleRule` nests
+(`kind: "subtitle"`, `delivery.subtitle`, a `delivery_package`
+artifact's `subtitle`).
+
+The three speech checks need `transcript`: a path to a word-timed
+transcript JSON (transcription-skill's format). It is resolved through
+the same path policy as every other input, and its content fingerprint
+(not its path) joins the request identity. qc-skill reads it and never
+produces one. Without it, or when it cannot be read, those checks are
+`UNKNOWN` with a reason.
+
+**Transcript reading** (`src/qc_skill/measurements/transcript.py`) is
+tolerant of older and newer files:
+
+- words come from `segments[].words[]`; a top-level `words` list is used
+  when no segment carries words; a top-level JSON list is read as
+  segments (or as words);
+- a word's text is `text`, or `word` when `text` is absent;
+- `index` (0-based, whole transcript) is kept when it is an integer;
+  every word also gets `position`, its 0-based reading order counted over
+  all word entries, so it equals `index` when the file has one;
+- `pos` is read when present (lower-cased) and never inferred; the
+  labels qc-skill knows are `noun, pronoun, verb, adjective, adverb,
+  particle, auxiliary, conjunction, interjection, prefix, suffix, symbol,
+  other`;
+- `timing: "interpolated"` (transcription-skill 0.9.0+, a
+  character-share estimate on dictionary-segmented words) marks an
+  estimated timing; `"measured"` or no `timing` key is a measured /
+  engine timing; a boolean `interpolated`, `timing_interpolated` or
+  `estimated` set to `true` counts as interpolated too;
+- a segment with `words: null` contributes no words;
+- a transcript with no usable word at all (e.g. one made without word
+  timestamps) counts as unreadable, so the speech checks are `UNKNOWN`
+  instead of passing on zero words;
+- a word without text, or without numeric finite `start`/`end` with
+  `end >= start`, is skipped and counted.
+
+**Measurements** (opt-in): `subtitle.cue_texts` (per cue, in file
+order: `{index, cue_id, start, end, lines, chars}`; `lines` are the
+visible text with SRT/WebVTT tags and `{...}` override blocks removed,
+WebVTT character references decoded, each line stripped),
+`subtitle.transcript_words` (`[{position, index, text, start, end, pos,
+interpolated}]`, or `null` with the read error in `notes`),
+`subtitle.transcript_word_count`, `subtitle.transcript_skipped_word_count`,
+`subtitle.transcript_pos_word_count`,
+`subtitle.transcript_interpolated_word_count`.
+
+**How cues and words are matched.**
+
+- *Time:* a word belongs to the cue on screen at the word's midpoint
+  (`start <= midpoint < end`; with overlapping cues, the latest-starting
+  one). A word between cues belongs to none.
+- *Text:* cue lines and words are compared after NFKC normalisation and
+  case folding, with every punctuation, symbol, space and control
+  character removed. A cue is *aligned* when its words, in transcript
+  order, spell its text exactly in that form; then each line's start
+  maps to the word that starts there. A cue whose words differ in any
+  way (edited wording, numerals written differently, a word cut by the
+  cue boundary) is not aligned, and nothing is guessed for it.
+
+**Character counting** (`max_total_chars`, `min_cue_chars`): Unicode code
+points of each visible line after NFKC normalisation, line breaks not
+counted, spaces inside a line counted. Every code point counts as one:
+a full-width kanji and a Latin letter both count 1, and half-width
+katakana count as their full-width forms (`ｶﾞ` is one character). It is
+not a display-width measure. The existing `max_line_length` keeps its own
+counting (raw code points per line, markup included).
+
+**Policy checks:**
+
+| check_id | rule field(s) | status / finding |
+|---|---|---|
+| `subtitle.cue_boundaries_on_word_boundaries` | `transcript`, `word_boundary_tolerance_sec` | FAIL `SUBTITLE_CUE_BOUNDARY_INSIDE_WORD` when a cue start or end lies inside a word by more than the tolerance at both edges (`word.start + tol < t < word.end - tol`) |
+| `subtitle.cue_not_early` | `transcript`, `max_cue_lead_sec` | FAIL `SUBTITLE_CUE_EARLY` when the first word assigned to a cue starts more than `max_cue_lead_sec` after the cue appears (exactly the limit passes); cues with no words are counted in `cues_without_speech` |
+| `subtitle.speech_covered` | `transcript`, `max_uncovered_speech_sec`, `extra_covered_intervals: [{start, end, label?}]` | FAIL `SUBTITLE_SPEECH_UNCOVERED` when, inside a stretch with no cue and no extra covered interval, speech runs longer than `max_uncovered_speech_sec` (first word start to last word end, clipped to the stretch) |
+| `subtitle.no_forbidden_line_start` | `forbidden_line_start_pos` (any of the labels above), `forbidden_line_start_phrases` | FAIL `SUBTITLE_FORBIDDEN_LINE_START` when a line starts with a word whose `pos` is listed, or with a listed phrase |
+| `subtitle.total_chars_within_limit` | `max_total_chars` | FAIL `SUBTITLE_CUE_TOO_MANY_CHARS` when a cue has more characters |
+| `subtitle.cue_chars_meet_minimum` | `min_cue_chars` | **WARN** `SUBTITLE_CUE_TOO_FEW_CHARS` when a non-empty cue has fewer characters (short replies are legitimate; empty cues are `subtitle.no_empty_cues`' job) |
+
+`subtitle.no_forbidden_line_start` looks at **each line** of each cue,
+not only the first. The phrase part needs no transcript: a phrase
+matches when the line, in the comparison form above, starts with it; when
+the cue is aligned with transcript words, the phrase must also end on a
+word boundary (so `は` does not match the single word `はい`), and
+evidence says which (`phrase_matched_on: word_boundary | text_prefix`).
+The pos part needs a transcript with `pos`; it is never guessed from
+characters (a leading `が` can begin a noun). When it cannot be decided -
+no transcript, no `pos` labels in it, a cue that is not aligned, a line
+that starts inside a word, a word without `pos` - the check is `UNKNOWN`
+(unless a confirmed violation makes it FAIL), and `evidence.pos_part`
+plus `evidence.unverified` say why, line by line.
+
+A violation that rests on an interpolated word timing is not confirmed:
+it is listed under `evidence.unconfirmed` and makes the check `UNKNOWN`
+instead of FAIL, unless confirmed violations exist too.
+
+**Evidence.** Each check's `evidence.violations` (also in the finding's
+evidence) is sorted by time; every entry carries `time_sec` (where to
+jump), the cue's `cue_index` (1-based file order), `cue_id`, `start`,
+`end` and `text`, the involved words (`position`, `index`, `text`,
+`start`, `end`, `pos`), and a `description` line such as
+`12.340s cue #5 (id 5) "Hello world" starts 0.120s inside the word "Hello"
+(12.220-12.600s)`. The finding's `timestamp` is the first violation's
+`time_sec`.
+
+**No default thresholds.** Every threshold is a style choice, so none
+has a default. Starting points to consider: `word_boundary_tolerance_sec`
+0.04-0.1 (about one to two frames, within typical word-timing jitter),
+`max_cue_lead_sec` 0.3-0.5, `max_uncovered_speech_sec` 1.0-2.0.
+
+**`preset: "ja"`** (opt-in; the default assumes no language) fills only
+the fields a rule leaves unset: `forbidden_line_start_pos: [particle,
+auxiliary]`, `forbidden_line_start_phrases: [を, に, が, って, けど, ので,
+です, ます, でした, ました, と思います]`, `max_total_chars: 32` (two
+lines of 16), `min_cue_chars: 4`. It sets no timing threshold. The
+contract lists the presets and pos labels under `subtitle_speech`.
 
 ## Delivery (`kind: "delivery"`)
 
