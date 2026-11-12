@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.1.1 - 2026-11-12
+
+- fix(subtitle): check the rule's own line/duration/gap limits (#31) (5b1c97a)
+
 ## v1.1.0 - 2026-11-12
 
 - feat: opt-in subtitle cue-text and subtitle-vs-speech checks (ADR-023) (#30) (7646a54)
