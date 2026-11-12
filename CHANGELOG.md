@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.3.1 - 2026-11-12
+
+- docs(roadmap): video loop seam, alpha edge and key/fill checks; check vs qc split settled (#34) (eac797b)
+
 ## v1.3.0 - 2026-11-12
 
 - feat(audio): opt-in loop-seam checks (ADR-025) (#33) (73b4b7c)
