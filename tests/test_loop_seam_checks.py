@@ -295,3 +295,25 @@ def test_loop_seam_in_a_delivery_and_a_delivery_package(media, workspace):
     resp = run(doc, workspace)
     by_artifact = {c["artifact_id"]: c["status"] for c in resp["report"]["checks"] if c["check_id"] == CHECK_IDS[0]}
     assert by_artifact == {"bed": "PASS", "naive": "FAIL"}
+
+
+def _float_wav(path, samples, rate=16000):
+    """A mono 32-bit float WAV (format 3), written by hand: the wave module writes integer PCM only."""
+
+    import struct
+
+    data = struct.pack(f"<{len(samples)}f", *samples)
+    fmt = struct.pack("<HHIIHH", 3, 1, rate, rate * 4, 4, 32)
+    body = b"WAVE" + b"fmt " + struct.pack("<I", len(fmt)) + fmt + b"data" + struct.pack("<I", len(data)) + data
+    path.write_bytes(b"RIFF" + struct.pack("<I", len(body)) + body)
+
+
+def test_non_finite_samples_at_the_seam_are_unknown(workspace):
+    samples = _sine(16000, 250, 16000)
+    samples[-1] = float("nan")
+    path = workspace / "nan_at_wrap.wav"
+    _float_wav(path, samples)
+    resp = run(_doc(path, **LIMITS), workspace)
+    assert _statuses(resp) == ("UNKNOWN", "UNKNOWN", "UNKNOWN")
+    assert "not all finite" in checks_by_id(resp)[CHECK_IDS[0]]["reason"]
+    json.dumps(measurements_by_id(resp)["audio.loop_seams"], allow_nan=False)  # no non-finite value in the seam facts

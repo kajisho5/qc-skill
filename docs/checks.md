@@ -352,8 +352,9 @@ reason}` on its own:
 
 A seam whose windows do not fit in the file (the wrap of a file shorter
 than two windows, a seam closer than a window to an end, a seam past the
-end, less than 50 ms of audio around it for the click) is not measured
-for that fact, with the reason. Nothing is padded.
+end, less than 50 ms of audio around it for the click, samples there
+that are not finite numbers) is not measured for that fact, with the
+reason. Nothing is padded.
 
 **Policy checks** (each only when its limit is set; exactly the limit
 passes; values are compared as reported):

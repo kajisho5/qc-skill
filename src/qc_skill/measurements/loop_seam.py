@@ -266,10 +266,16 @@ def _measure_seam(
         return ([_channel(data, channels, c, junction - span, junction) for c in range(channels)],
                 [_channel(data, channels, c, junction, junction + span) for c in range(channels)])
 
+    def finite(got: Tuple[List[List[float]], List[List[float]]]) -> bool:
+        return all(math.isfinite(v) for side in got for ch in side for v in ch)
+
+    non_finite = "the decoded samples around the seam are not all finite numbers"
     reach = click_spans(sample_rate)[1] + 1
     got = sides(reach)
     if got is None:
         entry["click"] = {"measured": False, "reason": f"the audio does not reach {CLICK_CONTEXT_SEC * 1000:g} ms on both sides of the seam"}
+    elif not finite(got):
+        entry["click"] = {"measured": False, "reason": non_finite}
     else:
         worst = None
         for c in range(channels):
@@ -291,6 +297,10 @@ def _measure_seam(
         reason = f"{where} ({window} samples on each side)"
         entry["level"] = {"measured": False, "reason": reason}
         entry["spectrum"] = {"measured": False, "reason": reason}
+        return entry
+    if not finite(got):
+        entry["level"] = {"measured": False, "reason": non_finite}
+        entry["spectrum"] = {"measured": False, "reason": non_finite}
         return entry
     level = None
     for c in range(channels):
