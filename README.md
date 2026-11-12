@@ -152,6 +152,15 @@ VMAF needs an ffmpeg built with libvmaf (`qc doctor --json` reports
 `filter:libvmaf`); without it VMAF is `UNKNOWN` and SSIM/PSNR still run.
 See [docs/checks.md](docs/checks.md) and ADR-021.
 
+Subtitle cue-text limits and subtitle-vs-speech checks are opt-in too:
+`rules.subtitle.max_total_chars` / `min_cue_chars` (WARN), and, with
+`rules.subtitle.transcript` (a word-timed transcript JSON),
+`word_boundary_tolerance_sec`, `max_cue_lead_sec`,
+`max_uncovered_speech_sec` and `forbidden_line_start_pos` /
+`forbidden_line_start_phrases`. `preset: "ja"` fills in suggested
+Japanese values; the default assumes no language. See
+[docs/checks.md](docs/checks.md) and ADR-023.
+
 `contract["provides"]` groups these checks into ten cross-repository
 Capability ids (`measure.video.freeze`, `measure.video.black_frame`,
 `measure.video.format`, `measure.audio.integrity`,

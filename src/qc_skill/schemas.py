@@ -17,11 +17,14 @@ from .rules import (
     ArtifactDependencyRule,
     ArtifactDurationConsistencyRule,
     AudioRule,
+    CoveredInterval,
     CrossArtifactRule,
     DeliveryArtifactRule,
     DeliveryPackageRule,
     DeliveryRule,
+    POS_TAGS,
     REFERENCE_METRICS,
+    SUBTITLE_PRESETS,
     SourceCue,
     TEXT_ROLES,
     SubtitleRule,
@@ -123,6 +126,8 @@ def _build_rule(cls, data: Optional[Dict[str, Any]]):
     kwargs = dict(data)
     if cls is VideoRule:
         _validate_video_rule_fields(kwargs)
+    if cls is SubtitleRule:
+        _validate_subtitle_rule_fields(kwargs)
     if "video" in kwargs and kwargs["video"] is not None:
         kwargs["video"] = _build_rule(VideoRule, kwargs["video"])
     if "audio" in kwargs and kwargs["audio"] is not None:
@@ -240,6 +245,63 @@ def _validate_video_rule_fields(kwargs: Dict[str, Any]) -> None:
             role: _number(v, field_name=f"VideoRule.min_text_height_px.{role}", allow_negative=False)
             for role, v in sorted(heights.items())
         }
+
+
+def _build_covered_interval(item: Any) -> CoveredInterval:
+    if not isinstance(item, dict):
+        raise error("INVALID_REQUEST", "each entry in SubtitleRule.extra_covered_intervals must be an object")
+    unknown = set(item) - {"start", "end", "label"}
+    if unknown:
+        raise error("INVALID_REQUEST", f"unknown fields for a covered interval: {sorted(unknown)}")
+    for key in ("start", "end"):
+        if key not in item:
+            raise error("INVALID_REQUEST", f"covered interval is missing required field {key!r}")
+    start = _number(item["start"], field_name="covered interval.start", allow_negative=False)
+    end = _number(item["end"], field_name="covered interval.end", allow_negative=False)
+    if end < start:
+        raise error("INVALID_REQUEST", "covered interval.end must not be before its start")
+    label = item.get("label")
+    if label is not None and not isinstance(label, str):
+        raise error("INVALID_REQUEST", "covered interval.label must be a string when present")
+    return CoveredInterval(start=start, end=end, label=label)
+
+
+def _string_list(value: Any, *, field_name: str) -> List[str]:
+    if not isinstance(value, list) or not all(isinstance(v, str) and v.strip() for v in value):
+        raise error("INVALID_REQUEST", f"{field_name} must be a list of non-empty strings")
+    return list(value)
+
+
+def _validate_subtitle_rule_fields(kwargs: Dict[str, Any]) -> None:
+    """Typed validation for the ADR-023 SubtitleRule fields."""
+
+    if kwargs.get("preset") is not None and kwargs["preset"] not in SUBTITLE_PRESETS:
+        raise error("INVALID_REQUEST", f"SubtitleRule.preset must be one of {sorted(SUBTITLE_PRESETS)}", got=kwargs["preset"])
+    if kwargs.get("transcript") is not None:
+        if not isinstance(kwargs["transcript"], str) or not kwargs["transcript"]:
+            raise error("INVALID_REQUEST", "SubtitleRule.transcript must be a non-empty path string")
+    for name in ("word_boundary_tolerance_sec", "max_cue_lead_sec", "max_uncovered_speech_sec"):
+        if kwargs.get(name) is not None:
+            kwargs[name] = _number(kwargs[name], field_name=f"SubtitleRule.{name}", allow_negative=False)
+    for name in ("max_total_chars", "min_cue_chars"):
+        value = kwargs.get(name)
+        if value is not None and (not isinstance(value, int) or isinstance(value, bool) or value < 1):
+            raise error("INVALID_REQUEST", f"SubtitleRule.{name} must be a positive integer")
+    if kwargs.get("extra_covered_intervals") is not None:
+        intervals = kwargs["extra_covered_intervals"]
+        if not isinstance(intervals, list):
+            raise error("INVALID_REQUEST", "SubtitleRule.extra_covered_intervals must be a list")
+        kwargs["extra_covered_intervals"] = [_build_covered_interval(i) for i in intervals]
+    if kwargs.get("forbidden_line_start_pos") is not None:
+        tags = _string_list(kwargs["forbidden_line_start_pos"], field_name="SubtitleRule.forbidden_line_start_pos")
+        bad = [t for t in tags if t not in POS_TAGS]
+        if bad:
+            raise error("INVALID_REQUEST", f"SubtitleRule.forbidden_line_start_pos entries must be one of {list(POS_TAGS)}", got=bad)
+        kwargs["forbidden_line_start_pos"] = [t for t in POS_TAGS if t in tags]  # canonical order: stable identity
+    if kwargs.get("forbidden_line_start_phrases") is not None:
+        kwargs["forbidden_line_start_phrases"] = _string_list(
+            kwargs["forbidden_line_start_phrases"], field_name="SubtitleRule.forbidden_line_start_phrases",
+        )
 
 
 def _build_timeline_segment(item: Any) -> TimelineSegment:

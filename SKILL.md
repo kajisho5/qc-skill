@@ -64,6 +64,30 @@ Three opt-in `VideoRule` checks (each measured only when asked, ADR-016/017/018)
   at a 1080 px short side (`min_text_height_px` per role, no default)
   -> `TEXT_ILLEGIBLE`. Measured facts only; no OCR.
 
+Opt-in `SubtitleRule` cue-text and subtitle-vs-speech checks (ADR-023).
+None has a default threshold; each runs only when its field is set:
+
+- `max_total_chars` -> `subtitle.total_chars_within_limit`
+  (`SUBTITLE_CUE_TOO_MANY_CHARS`, FAIL); `min_cue_chars` ->
+  `subtitle.cue_chars_meet_minimum` (`SUBTITLE_CUE_TOO_FEW_CHARS`, WARN
+  only). Characters are NFKC code points, line breaks not counted.
+- `transcript` (path to a word-timed transcript JSON; `index`/`pos` used
+  when present, never required) enables:
+  `word_boundary_tolerance_sec` -> `subtitle.cue_boundaries_on_word_boundaries`
+  (`SUBTITLE_CUE_BOUNDARY_INSIDE_WORD`), `max_cue_lead_sec` ->
+  `subtitle.cue_not_early` (`SUBTITLE_CUE_EARLY`),
+  `max_uncovered_speech_sec` (+ `extra_covered_intervals: [{start, end,
+  label?}]` for e.g. emphasis graphics) -> `subtitle.speech_covered`
+  (`SUBTITLE_SPEECH_UNCOVERED`).
+- `forbidden_line_start_pos` (pos labels; needs a transcript with `pos`,
+  else UNKNOWN - never guessed) and `forbidden_line_start_phrases`
+  (literal, no transcript needed) -> `subtitle.no_forbidden_line_start`
+  (`SUBTITLE_FORBIDDEN_LINE_START`), checked on every line.
+- `preset: "ja"` fills suggested Japanese values into unset fields only.
+
+Every violation in `evidence.violations` carries `time_sec`, the cue's
+`cue_index`/`cue_id`/`text` and a one-line `description`.
+
 One opt-in full-reference comparison (ADR-021), `kind: video` or
 `rules.delivery.video`, against the top-level `reference_video`:
 

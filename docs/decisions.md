@@ -787,3 +787,75 @@ can publish ids every consumer can join on.
   `PROVIDES_VALID`. `provides` and `tools` are not in the agent's pinned
   drift keys, so its availability gate is unaffected, but its pinned
   `contract_*.json` snapshot must be re-pinned to carry the new fields.
+
+## ADR-023: subtitle cue text and subtitle-vs-speech checks are opt-in, read a caller-supplied transcript, and never guess
+
+Subtitle QC so far checked structure and timing against itself or against
+caller-supplied numbers. Whether a cue sits on the speech it shows needs
+the speech's own timing, which qc-skill does not measure (transcription
+is out of scope, `not_provided`). The transcript a pipeline already has
+(transcription-skill's word-timed JSON) is the fact to compare against.
+
+- **Input.** `SubtitleRule.transcript` is a path, resolved through the
+  path policy like `input`/`subtitle`/`reference_video`, and fingerprinted
+  by content. The fingerprint joins `asset_fingerprints`
+  (`transcript:<sha256>`, or `<artifact_id>:transcript:<sha256>` in a
+  delivery package) and the path is replaced in the rules payload, so the
+  identity follows the transcript's bytes and stays free of machine-local
+  paths (contract `identity.excludes`). It is a rule field rather than a
+  top-level request key because it only matters to the subtitle rule that
+  names it, and a delivery package can name one per subtitle artifact.
+- **Tolerant reading.** transcription-skill is adding a whole-transcript
+  `index`, an optional coarse `pos` and possibly an interpolated-timing
+  flag; older files have none of them. The reader takes `text` or
+  `word`, keeps `index` when it is an integer and always derives
+  `position` (reading order over every word entry, so the two agree when
+  both exist), reads `pos` only when present, and skips (and counts)
+  words without text or usable timing. Nothing is repaired or inferred.
+- **Matching.** Time: a word belongs to the cue on screen at its
+  midpoint. Text: both sides in NFKC, case-folded, with punctuation,
+  symbols, spaces and control characters removed; a cue is aligned only
+  when its words spell its text exactly. Fuzzy alignment was not chosen:
+  a near-match decides which word starts a line, and a wrong guess there
+  turns into a confident FAIL or PASS.
+- **Checks.** `subtitle.cue_boundaries_on_word_boundaries`
+  (`word_boundary_tolerance_sec`), `subtitle.cue_not_early`
+  (`max_cue_lead_sec`), `subtitle.speech_covered`
+  (`max_uncovered_speech_sec`, `extra_covered_intervals` for time that an
+  emphasis graphic or similar already covers),
+  `subtitle.no_forbidden_line_start` (`forbidden_line_start_pos`,
+  `forbidden_line_start_phrases`, each line of each cue),
+  `subtitle.total_chars_within_limit` (`max_total_chars`, FAIL) and
+  `subtitle.cue_chars_meet_minimum` (`min_cue_chars`, WARN: a one-word
+  reply is a legitimate cue, so a short cue is a prompt to look, not a
+  defect). Each runs only when its field is set (ADR-005): none of these
+  thresholds is a standard, so none has a default; docs/checks.md lists
+  starting points instead.
+- **UNKNOWN, not a guess.** No transcript, an unreadable one, or no `pos`
+  makes the dependent check (or the pos part) UNKNOWN with a reason. The
+  pos part is never derived from characters: a leading `が` can begin a
+  noun. A violation that rests on an interpolated word timing is listed
+  as unconfirmed and gives UNKNOWN rather than FAIL. A phrase is matched
+  literally, but when the cue is aligned it must also end on a word
+  boundary, so a one-character phrase does not match inside a longer
+  word.
+- **Characters.** The skill had no width-aware counting (`max_line_length`
+  counts raw code points), so the new limits count NFKC code points of
+  the visible text (markup removed, line breaks not counted). Display
+  width (full-width = 2) was not chosen: subtitle character limits are
+  normally stated in characters, and NFKC already folds half-width
+  katakana and full-width Latin into one count.
+- **Evidence.** One finding per check, as elsewhere, with
+  `evidence.violations` sorted by time; each entry has `time_sec`, the
+  cue's `cue_index`/`cue_id`/`text`, the words involved, and a
+  one-line `description`, so the list is both machine-readable and
+  readable as "seconds: what is wrong".
+- **Language.** The default assumes no language. `preset: "ja"` is an
+  explicit opt-in that fills only unset fields with suggested Japanese
+  values (pos `particle`/`auxiliary`, a short phrase list, 32/4
+  characters); it sets no timing threshold, because those do not depend
+  on the language.
+
+The six checks join no `provides` Capability group: CAPABILITY_MATRIX.md
+assigns no id for them yet, so they are in `contract.UNGROUPED_CHECKS`
+(ADR-014 precedent).

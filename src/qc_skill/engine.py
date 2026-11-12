@@ -23,6 +23,7 @@ from .measurements.audio import analyze_audio, measure_audio_streams
 from .measurements.reference import analyze_reference_metrics, not_performed as reference_not_performed
 from .measurements.subtitle import measure_subtitle
 from .measurements.temporal import analyze_temporal
+from .measurements.transcript import measure_transcript
 from .measurements.text_legibility import analyze_text_regions
 from .measurements.video import analyze_video_defects, measure_container, measure_video_streams
 from .models import QCCheck, QCFinding, QCMeasurement, QCReport
@@ -37,6 +38,7 @@ from .rules import (
     evaluate_delivery_package,
     evaluate_subtitle,
     evaluate_video,
+    subtitle_rule_needs_cue_texts,
 )
 from .runner import check_deadline, request_deadline
 from .schemas import Request
@@ -255,15 +257,39 @@ def _gather_audio_measurements(
 
 
 def _gather_subtitle_measurements(
-    subtitle_path: Path, video_duration_sec: Optional[float], params: Dict[str, Any]
+    subtitle_path: Path, video_duration_sec: Optional[float], params: Dict[str, Any],
+    subtitle_rule: Optional[SubtitleRule] = None, transcript_path: Optional[Path] = None,
 ) -> List[QCMeasurement]:
-    return measure_subtitle(
+    measurements = measure_subtitle(
         subtitle_path,
         video_duration_sec=video_duration_sec,
         max_line_length=params["max_line_length"],
         max_cue_duration=params["max_cue_duration_sec"],
         max_gap_sec=params["max_gap_sec"],
+        include_cue_texts=subtitle_rule_needs_cue_texts(subtitle_rule),
     )
+    if transcript_path is not None:
+        measurements += measure_transcript(transcript_path)
+    return measurements
+
+
+def _applicable_subtitle_rule(request: Request) -> Optional[SubtitleRule]:
+    if request.kind == "subtitle":
+        return request.subtitle_rule
+    if request.kind == "delivery" and request.subtitle and request.delivery_rule is not None:
+        return request.delivery_rule.subtitle
+    return None
+
+
+def _resolve_transcript(ctx: "ExecutionContext", subtitle_rule: Optional[SubtitleRule]):
+    """ADR-023: the transcript a SubtitleRule names is an input file like
+    any other - resolved through the path policy and fingerprinted by
+    content, so the identity follows the transcript's bytes, not its path."""
+
+    if subtitle_rule is None or subtitle_rule.transcript is None:
+        return None, None
+    path = ctx.path_policy.resolve_input(subtitle_rule.transcript)
+    return path, sha256_file(path)
 
 
 def _build_checks_and_findings(
@@ -362,12 +388,24 @@ def _identity(
 
 
 def _rules_payload(request: Request) -> Dict[str, Any]:
+    def without_paths(value):
+        # A SubtitleRule.transcript path is machine-local: the transcript's
+        # content fingerprint is in asset_fingerprints instead (ADR-023).
+        if isinstance(value, dict):
+            return {
+                k: ("<fingerprinted input>" if k == "transcript" and v is not None else without_paths(v))
+                for k, v in value.items()
+            }
+        if isinstance(value, list):
+            return [without_paths(v) for v in value]
+        return value
+
     def as_dict(rule):
         if rule is None:
             return None
         from dataclasses import asdict
 
-        return asdict(rule)
+        return without_paths(asdict(rule))
 
     return {
         "video": as_dict(request.video_rule),
@@ -423,11 +461,14 @@ def _run_report(request: Request, ctx: ExecutionContext) -> Dict[str, Any]:
         reference_video_path = ctx.path_policy.resolve_input(request.reference_video)
         reference_fingerprint = sha256_file(reference_video_path)
 
+    subtitle_rule = _applicable_subtitle_rule(request)
+    transcript_path, transcript_fingerprint = _resolve_transcript(ctx, subtitle_rule)
+
     effective_parameters = _effective_parameters(request)
     rules_payload = _rules_payload(request)
     asset_fingerprints = [fingerprint] + ([subtitle_fingerprint] if subtitle_fingerprint else []) + (
         [reference_fingerprint] if reference_fingerprint else []
-    )
+    ) + ([f"transcript:{transcript_fingerprint}"] if transcript_fingerprint else [])
 
     identity = _identity(
         asset_fingerprints=asset_fingerprints,
@@ -486,7 +527,7 @@ def _run_report(request: Request, ctx: ExecutionContext) -> Dict[str, Any]:
             ref_probe = probe_media(ctx.capabilities.ffprobe_path, reference_video_path)
             fmt_duration = ref_probe.get("format", {}).get("duration")
             ref_duration = float(fmt_duration) if fmt_duration is not None else None
-        measurements = _gather_subtitle_measurements(input_path, ref_duration, effective_parameters)
+        measurements = _gather_subtitle_measurements(input_path, ref_duration, effective_parameters, subtitle_rule, transcript_path)
     elif request.kind == "delivery":
         measurements = []
         fmt_probe = probe_media(ctx.capabilities.ffprobe_path, input_path)
@@ -509,7 +550,9 @@ def _run_report(request: Request, ctx: ExecutionContext) -> Dict[str, Any]:
         duration_m = next((m for m in measurements if m.id == "container.duration_sec"), None)
         video_duration_sec = duration_m.value if duration_m else None
         if subtitle_path is not None:
-            sub_measurements = _gather_subtitle_measurements(subtitle_path, video_duration_sec, effective_parameters)
+            sub_measurements = _gather_subtitle_measurements(
+                subtitle_path, video_duration_sec, effective_parameters, subtitle_rule, transcript_path,
+            )
             measurements += sub_measurements
         else:
             measurements.append(QCMeasurement("subtitle.exists", "subtitle", "exists", False, source="OBSERVED"))
@@ -541,6 +584,8 @@ def _run_report(request: Request, ctx: ExecutionContext) -> Dict[str, Any]:
         provenance["subtitle_input"] = {"fingerprint": subtitle_fingerprint}
     if reference_fingerprint:
         provenance["reference_video_input"] = {"fingerprint": reference_fingerprint}
+    if transcript_fingerprint:
+        provenance["transcript_input"] = {"fingerprint": transcript_fingerprint}
 
     report = QCReport(
         id=f"qcreport_{identity[:16]}",
@@ -609,6 +654,14 @@ def _run_delivery_package(request: Request, ctx: ExecutionContext) -> Dict[str, 
     asset_fingerprints = [
         f"{a.artifact_id}:{a.artifact_type}:{fingerprints[a.artifact_id] or 'MISSING'}" for a in request.artifacts
     ]
+    transcripts: Dict[str, Any] = {}
+    for a in request.artifacts:
+        artifact_rule = rule_by_id.get(a.artifact_id)
+        if a.artifact_type == "subtitle" and resolved[a.artifact_id] is not None and artifact_rule is not None:
+            t_path, t_fingerprint = _resolve_transcript(ctx, artifact_rule.subtitle)
+            if t_path is not None:
+                transcripts[a.artifact_id] = (t_path, t_fingerprint)
+                asset_fingerprints.append(f"{a.artifact_id}:transcript:{t_fingerprint}")
 
     rules_payload = _rules_payload(request)
     identity = _identity(
@@ -689,7 +742,12 @@ def _run_delivery_package(request: Request, ctx: ExecutionContext) -> Dict[str, 
                 # scope) - comparing this subtitle's duration against
                 # another artifact in the same package is cross-artifact
                 # validation, Phase 2's job, not this one's.
-                own += _gather_subtitle_measurements(path, None, effective_parameters)
+                artifact_rule = rule_by_id.get(aid)
+                own += _gather_subtitle_measurements(
+                    path, None, effective_parameters,
+                    artifact_rule.subtitle if artifact_rule is not None else None,
+                    transcripts[aid][0] if aid in transcripts else None,
+                )
         own = _dedupe_measurements(own)
         per_artifact_measurements[aid] = _measurement_map(own)
         measurements += [replace(m, artifact_id=aid) for m in own]
@@ -715,6 +773,7 @@ def _run_delivery_package(request: Request, ctx: ExecutionContext) -> Dict[str, 
                 "present": resolved[a.artifact_id] is not None,
                 "fingerprint": fingerprints[a.artifact_id],
                 "size_bytes": sizes[a.artifact_id],
+                **({"transcript_fingerprint": transcripts[a.artifact_id][1]} if a.artifact_id in transcripts else {}),
             }
             for a in request.artifacts
         ],

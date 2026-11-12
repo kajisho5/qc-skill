@@ -21,6 +21,8 @@ Two kinds of checks are produced:
 
 from __future__ import annotations
 
+import unicodedata
+from bisect import bisect_left, bisect_right
 from dataclasses import dataclass, field, replace
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -938,6 +940,40 @@ def _map_source_to_delivery(timeline: List[TimelineSegment], source_time: float)
 
 
 @dataclass
+class CoveredInterval:
+    """A caller-named time range in which speech counts as covered even
+    with no cue on screen (ADR-023), e.g. an emphasis graphic that shows
+    the spoken words. ``label`` is carried into evidence only."""
+
+    start: float
+    end: float
+    label: Optional[str] = None
+
+
+# Coarse part-of-speech labels a transcript word may carry in ``pos``
+# (ADR-023). qc-skill never assigns one itself.
+POS_TAGS = (
+    "noun", "pronoun", "verb", "adjective", "adverb", "particle", "auxiliary",
+    "conjunction", "interjection", "prefix", "suffix", "symbol", "other",
+)
+
+# Opt-in bundles of suggested SubtitleRule values (ADR-023), applied only
+# when a rule names one in ``preset``, and only to fields the rule leaves
+# unset. They are style suggestions, not standards: the default (no
+# preset) assumes no language at all.
+SUBTITLE_PRESETS: Dict[str, Dict[str, Any]] = {
+    "ja": {
+        "forbidden_line_start_pos": ["particle", "auxiliary"],
+        "forbidden_line_start_phrases": [
+            "を", "に", "が", "って", "けど", "ので", "です", "ます", "でした", "ました", "と思います",
+        ],
+        "max_total_chars": 32,  # two lines of 16
+        "min_cue_chars": 4,  # WARN only: short replies are legitimate
+    },
+}
+
+
+@dataclass
 class SubtitleRule:
     require_subtitle: Optional[bool] = None
     max_line_length: Optional[int] = None
@@ -948,6 +984,42 @@ class SubtitleRule:
     allow_overlapping_cues: bool = False
     allow_duplicate_ids: bool = False
     timeline_integrity: Optional[TimelineIntegrityRule] = None
+    # --- cue text and subtitle-vs-speech checks (ADR-023); every one is opt-in ---
+    preset: Optional[str] = None  # a SUBTITLE_PRESETS key, e.g. "ja"; fills only the fields left unset
+    transcript: Optional[str] = None  # path to a word-timed transcript JSON
+    word_boundary_tolerance_sec: Optional[float] = None
+    max_cue_lead_sec: Optional[float] = None
+    max_uncovered_speech_sec: Optional[float] = None
+    extra_covered_intervals: Optional[List[CoveredInterval]] = None
+    forbidden_line_start_pos: Optional[List[str]] = None  # any of POS_TAGS
+    forbidden_line_start_phrases: Optional[List[str]] = None
+    max_total_chars: Optional[int] = None
+    min_cue_chars: Optional[int] = None
+
+
+def resolve_subtitle_preset(rule: SubtitleRule) -> SubtitleRule:
+    """``rule`` with its named preset's values filled into the fields it
+    leaves unset (an explicit value always wins)."""
+
+    if rule.preset is None:
+        return rule
+    values = SUBTITLE_PRESETS[rule.preset]
+    fill = {k: (list(v) if isinstance(v, list) else v) for k, v in values.items() if getattr(rule, k) is None}
+    return replace(rule, **fill) if fill else rule
+
+
+def subtitle_rule_needs_cue_texts(rule: Optional[SubtitleRule]) -> bool:
+    if rule is None:
+        return False
+    rule = resolve_subtitle_preset(rule)
+    return any(
+        value is not None
+        for value in (
+            rule.word_boundary_tolerance_sec, rule.max_cue_lead_sec, rule.max_uncovered_speech_sec,
+            rule.forbidden_line_start_pos, rule.forbidden_line_start_phrases,
+            rule.max_total_chars, rule.min_cue_chars,
+        )
+    )
 
 
 def _evaluate_timeline_integrity(
@@ -1011,7 +1083,7 @@ def _evaluate_timeline_integrity(
 def evaluate_subtitle(measurements: MeasurementMap, rule: Optional[SubtitleRule]) -> Tuple[List[QCCheck], List[QCFinding]]:
     checks: List[QCCheck] = []
     findings: List[QCFinding] = []
-    rule = rule or SubtitleRule()
+    rule = resolve_subtitle_preset(rule or SubtitleRule())
 
     exists = _val(measurements, "subtitle.exists")
     if rule.require_subtitle is not None:
@@ -1151,7 +1223,465 @@ def evaluate_subtitle(measurements: MeasurementMap, rule: Optional[SubtitleRule]
         if finding is not None:
             findings.append(finding)
 
+    _evaluate_cue_text_and_speech(checks, findings, measurements, rule)
+
     return checks, findings
+
+
+# --- cue text and subtitle-vs-speech checks (ADR-023) ----------------------
+#
+# Every check below reads only measurements: ``subtitle.cue_texts`` (the
+# visible text of each cue) and, for the speech checks,
+# ``subtitle.transcript_words`` (the caller's word-timed transcript, read
+# by measurements/transcript.py). Each violation carries ``time_sec`` (the
+# moment to jump to), the cue's ``cue_index``/``cue_id``/``text`` and a
+# one-line ``description``, sorted by time.
+
+_SPEECH_MEASUREMENT_IDS = ["subtitle.cue_texts", "subtitle.transcript_words"]
+
+
+def match_key(text: str) -> str:
+    """The form cue text and transcript words are compared in: NFKC,
+    case-folded, with every punctuation, symbol, separator (space) and
+    control character removed."""
+
+    folded = unicodedata.normalize("NFKC", text).casefold()
+    return "".join(ch for ch in folded if unicodedata.category(ch)[0] not in "PSZC")
+
+
+def _r(value: Optional[float]) -> Optional[float]:
+    return None if value is None else round(value, 3)
+
+
+def _cue_ref(cue: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "cue_index": cue["index"], "cue_id": cue.get("cue_id"),
+        "start": _r(cue.get("start")), "end": _r(cue.get("end")),
+        "text": "\n".join(cue.get("lines") or []),
+    }
+
+
+def _cue_label(cue: Dict[str, Any]) -> str:
+    ident = f" (id {cue['cue_id']})" if cue.get("cue_id") is not None else ""
+    text = " / ".join(cue.get("lines") or [])
+    return f"cue #{cue['index']}{ident} \"{text}\""
+
+
+def _word_ref(word: Dict[str, Any]) -> Dict[str, Any]:
+    ref = {
+        "position": word["position"], "index": word.get("index"), "text": word["text"],
+        "start": _r(word["start"]), "end": _r(word["end"]),
+    }
+    if word.get("pos") is not None:
+        ref["pos"] = word["pos"]
+    if word.get("interpolated"):
+        ref["interpolated"] = True
+    return ref
+
+
+def _at(seconds: Optional[float]) -> str:
+    return "?" if seconds is None else f"{seconds:.3f}s"
+
+
+def _sorted_by_time(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    return sorted(items, key=lambda v: (v["time_sec"] is None, v["time_sec"] or 0.0, v.get("cue_index") or 0))
+
+
+def _record(
+    checks: List[QCCheck],
+    findings: List[QCFinding],
+    *,
+    check_id: str,
+    code: str,
+    violation_status: QCStatus,
+    violations: List[Dict[str, Any]],
+    evidence: Dict[str, Any],
+    message: str,
+    measurement_ids: List[str],
+    unknown_reason: Optional[str] = None,
+) -> None:
+    """FAIL/WARN (``violation_status``) on any confirmed violation, else
+    UNKNOWN when ``unknown_reason`` says part of the check could not be
+    verified, else PASS."""
+
+    violations = _sorted_by_time(violations)
+    evidence = {**evidence, "violation_count": len(violations), "violations": violations}
+    if violations:
+        severity = FindingSeverity.FAIL if violation_status == QCStatus.FAIL else FindingSeverity.WARN
+        finding = QCFinding(
+            code, severity, message, evidence=evidence,
+            timestamp=violations[0]["time_sec"], measurement_ids=list(measurement_ids),
+        )
+        findings.append(finding)
+        checks.append(QCCheck(check_id, "subtitle", violation_status, list(measurement_ids), evidence=evidence, finding_codes=[code]))
+    elif unknown_reason is not None:
+        checks.append(QCCheck(check_id, "subtitle", QCStatus.UNKNOWN, list(measurement_ids), evidence=evidence, reason=unknown_reason))
+    else:
+        checks.append(QCCheck(check_id, "subtitle", QCStatus.PASS, list(measurement_ids), evidence=evidence))
+
+
+def _timed_cues(cue_texts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    return sorted(
+        (c for c in cue_texts if c.get("start") is not None and c.get("end") is not None and c["start"] <= c["end"]),
+        key=lambda c: (c["start"], c["index"]),
+    )
+
+
+def assign_words_to_cues(cues: List[Dict[str, Any]], words: List[Dict[str, Any]]) -> Dict[int, List[Dict[str, Any]]]:
+    """Each word belongs to the cue on screen at the word's midpoint
+    (``start <= mid < end``; with overlapping cues, the latest-starting
+    one). Words in no cue belong to none. Per cue, words keep transcript
+    order."""
+
+    starts = [c["start"] for c in cues]
+    out: Dict[int, List[Dict[str, Any]]] = {c["index"]: [] for c in cues}
+    for word in words:
+        mid = (word["start"] + word["end"]) / 2.0
+        i = bisect_right(starts, mid) - 1
+        for j in range(i, max(-1, i - 8), -1):
+            cue = cues[j]
+            if cue["start"] <= mid < cue["end"]:
+                out[cue["index"]].append(word)
+                break
+    for cue_words in out.values():
+        cue_words.sort(key=lambda w: w["position"])
+    return out
+
+
+def _transcript_words(measurements: MeasurementMap) -> Tuple[Optional[List[Dict[str, Any]]], Optional[str]]:
+    m = measurements.get("subtitle.transcript_words")
+    if m is None:
+        return None, "no transcript was supplied (rules.subtitle.transcript)"
+    if m.value is None:
+        return None, m.notes or "the transcript could not be read"
+    return m.value, None
+
+
+def _check_word_boundaries(cues, words, tolerance: float) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    ordered = sorted(words, key=lambda w: (w["start"], w["position"]))
+    starts = [w["start"] for w in ordered]
+    longest = max((w["end"] - w["start"] for w in ordered), default=0.0)
+    confirmed, unconfirmed = [], []
+    for cue in cues:
+        for boundary in ("start", "end"):
+            t = cue[boundary]
+            for word in ordered[bisect_left(starts, t - longest):bisect_right(starts, t)]:
+                if word["start"] + tolerance < t < word["end"] - tolerance:
+                    inside = min(t - word["start"], word["end"] - t)
+                    entry = {
+                        "time_sec": _r(t), "boundary": boundary, **_cue_ref(cue),
+                        "word": _word_ref(word), "inside_word_by_sec": _r(inside),
+                        "description": (
+                            f"{_at(t)} {_cue_label(cue)} {boundary}s {inside:.3f}s inside the word "
+                            f"\"{word['text']}\" ({word['start']:.3f}-{word['end']:.3f}s)"
+                        ),
+                    }
+                    (unconfirmed if word.get("interpolated") else confirmed).append(entry)
+    return confirmed, unconfirmed
+
+
+def _check_cue_lead(cues, by_cue, max_lead: float) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], int]:
+    confirmed, unconfirmed = [], []
+    without_speech = 0
+    for cue in cues:
+        cue_words = by_cue.get(cue["index"]) or []
+        if not cue_words:
+            without_speech += 1
+            continue
+        first = min(cue_words, key=lambda w: (w["start"], w["position"]))
+        lead = first["start"] - cue["start"]
+        if lead > max_lead:
+            entry = {
+                "time_sec": _r(cue["start"]), **_cue_ref(cue), "first_word": _word_ref(first), "lead_sec": _r(lead),
+                "description": (
+                    f"{_at(cue['start'])} {_cue_label(cue)} appears {lead:.3f}s before its first word "
+                    f"\"{first['text']}\" starts at {first['start']:.3f}s"
+                ),
+            }
+            (unconfirmed if first.get("interpolated") else confirmed).append(entry)
+    return confirmed, unconfirmed, without_speech
+
+
+def _merge_intervals(intervals: List[Tuple[float, float]]) -> List[Tuple[float, float]]:
+    merged: List[Tuple[float, float]] = []
+    for start, end in sorted(intervals):
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def _check_uncovered_speech(cues, words, extra: List[CoveredInterval], max_uncovered: float):
+    covered = _merge_intervals(
+        [(c["start"], c["end"]) for c in cues if c["end"] > c["start"]]
+        + [(iv.start, iv.end) for iv in extra if iv.end > iv.start]
+    )
+    bounds = [float("-inf")] + [x for iv in covered for x in iv] + [float("inf")]
+    gaps = list(zip(bounds[0::2], bounds[1::2]))
+    ordered = sorted(words, key=lambda w: (w["start"], w["position"]))
+    starts = [w["start"] for w in ordered]
+    longest = max((w["end"] - w["start"] for w in ordered), default=0.0)
+    cue_ends = sorted(cues, key=lambda c: (c["end"], c["index"]))
+    end_times = [c["end"] for c in cue_ends]
+    cue_starts = [c["start"] for c in cues]
+    confirmed, unconfirmed = [], []
+    for g0, g1 in gaps:
+        lo = 0 if g0 == float("-inf") else bisect_left(starts, g0 - longest)
+        hi = len(ordered) if g1 == float("inf") else bisect_left(starts, g1)
+        inside = [w for w in ordered[lo:hi] if w["end"] > g0 and w["start"] < g1 and w["end"] > w["start"]]
+        if not inside:
+            continue
+        run_start = max(g0, min(w["start"] for w in inside))
+        run_end = min(g1, max(w["end"] for w in inside))
+        duration = run_end - run_start
+        if duration <= max_uncovered:
+            continue
+        p = bisect_right(end_times, run_start) - 1
+        n = bisect_left(cue_starts, run_end)
+        previous_cue = _cue_ref(cue_ends[p]) if p >= 0 else None
+        next_cue = _cue_ref(cues[n]) if n < len(cues) else None
+        spoken = " ".join(w["text"] for w in inside)
+        entry = {
+            "time_sec": _r(run_start), "start": _r(run_start), "end": _r(run_end), "duration_sec": _r(duration),
+            "spoken_text": spoken, "word_count": len(inside),
+            "first_word": _word_ref(inside[0]), "last_word": _word_ref(inside[-1]),
+            "previous_cue": previous_cue, "next_cue": next_cue,
+            "description": f"{_at(run_start)}-{_at(run_end)} {duration:.3f}s of speech with no cue on screen: \"{spoken}\"",
+        }
+        (unconfirmed if any(w.get("interpolated") for w in inside) else confirmed).append(entry)
+    return confirmed, unconfirmed
+
+
+def _align_cue(cue: Dict[str, Any], cue_words: List[Dict[str, Any]]):
+    """Character offsets of the cue's transcript words inside the cue's
+    own text (both in ``match_key`` form), or None when the words do not
+    spell the cue text exactly."""
+
+    cue_key = "".join(match_key(line) for line in cue.get("lines") or [])
+    if not cue_key or not cue_words:
+        return None
+    word_at: Dict[int, Dict[str, Any]] = {}
+    ends = set()
+    offset = 0
+    for word in cue_words:
+        key = match_key(word["text"])
+        if not key:
+            continue
+        word_at.setdefault(offset, word)
+        offset += len(key)
+        ends.add(offset)
+    if "".join(match_key(w["text"]) for w in cue_words) != cue_key:
+        return None
+    return word_at, ends
+
+
+def _check_line_starts(cues, by_cue, words_available: bool, pos_set, phrases):
+    phrase_keys = sorted(
+        {(match_key(p), p) for p in phrases if match_key(p)}, key=lambda kp: (-len(kp[0]), kp[0]),
+    )
+    violations, unverified = [], []
+    for cue in cues:
+        alignment = _align_cue(cue, by_cue.get(cue["index"]) or []) if words_available else None
+        offset = 0
+        for number, line in enumerate(cue.get("lines") or [], start=1):
+            key = match_key(line)
+            line_offset = offset
+            offset += len(key)
+            if not key:
+                continue
+            first_word = alignment[0].get(line_offset) if alignment is not None else None
+            phrase_hit = None
+            for phrase_key, phrase in phrase_keys:
+                if key.startswith(phrase_key) and (alignment is None or line_offset + len(phrase_key) in alignment[1]):
+                    phrase_hit = phrase
+                    break
+            pos_hit = None
+            if pos_set:
+                if alignment is None:
+                    unverified.append({
+                        "time_sec": _r(cue["start"]), **_cue_ref(cue), "line_number": number, "line": line,
+                        "reason": (
+                            "the transcript words in this cue do not spell the cue text" if by_cue.get(cue["index"])
+                            else "no transcript word falls inside this cue"
+                        ),
+                    })
+                elif first_word is None:
+                    unverified.append({
+                        "time_sec": _r(cue["start"]), **_cue_ref(cue), "line_number": number, "line": line,
+                        "reason": "the line starts inside a transcript word",
+                    })
+                elif first_word.get("pos") is None:
+                    unverified.append({
+                        "time_sec": _r(cue["start"]), **_cue_ref(cue), "line_number": number, "line": line,
+                        "reason": f"the word \"{first_word['text']}\" has no pos label",
+                    })
+                elif first_word["pos"] in pos_set:
+                    pos_hit = first_word["pos"]
+            if phrase_hit is None and pos_hit is None:
+                continue
+            reasons = []
+            if phrase_hit is not None:
+                reasons.append(f"phrase \"{phrase_hit}\"")
+            if pos_hit is not None:
+                reasons.append(f"{pos_hit} \"{first_word['text']}\"")
+            entry = {
+                "time_sec": _r(cue["start"]), **_cue_ref(cue), "line_number": number, "line": line,
+                "phrase": phrase_hit, "pos": pos_hit,
+                "phrase_matched_on": None if phrase_hit is None else ("word_boundary" if alignment is not None else "text_prefix"),
+                "description": f"{_at(cue['start'])} {_cue_label(cue)} line {number} starts with {' and '.join(reasons)}",
+            }
+            if first_word is not None:
+                entry["word"] = _word_ref(first_word)
+            violations.append(entry)
+    return violations, unverified
+
+
+def _evaluate_cue_text_and_speech(
+    checks: List[QCCheck], findings: List[QCFinding], measurements: MeasurementMap, rule: SubtitleRule,
+) -> None:
+    wants_boundaries = rule.word_boundary_tolerance_sec is not None
+    wants_lead = rule.max_cue_lead_sec is not None
+    wants_coverage = rule.max_uncovered_speech_sec is not None
+    wants_line_starts = rule.forbidden_line_start_pos is not None or rule.forbidden_line_start_phrases is not None
+    if not any((wants_boundaries, wants_lead, wants_coverage, wants_line_starts,
+                rule.max_total_chars is not None, rule.min_cue_chars is not None)):
+        return
+
+    cue_texts = _val(measurements, "subtitle.cue_texts")
+    if cue_texts is None:
+        reason = "subtitle.cue_texts was not measured"
+        for wanted, check_id in (
+            (wants_boundaries, "subtitle.cue_boundaries_on_word_boundaries"),
+            (wants_lead, "subtitle.cue_not_early"),
+            (wants_coverage, "subtitle.speech_covered"),
+            (wants_line_starts, "subtitle.no_forbidden_line_start"),
+            (rule.max_total_chars is not None, "subtitle.total_chars_within_limit"),
+            (rule.min_cue_chars is not None, "subtitle.cue_chars_meet_minimum"),
+        ):
+            if wanted:
+                checks.append(_unknown_check(check_id, "subtitle", reason, ["subtitle.cue_texts"]))
+        return
+
+    cues = _timed_cues(cue_texts)
+    words, words_reason = _transcript_words(measurements)
+    by_cue = assign_words_to_cues(cues, words) if words is not None else {}
+    base = {"cues_checked": len(cues), "words_checked": len(words) if words is not None else None}
+
+    if wants_boundaries:
+        tolerance = rule.word_boundary_tolerance_sec
+        if words is None:
+            checks.append(QCCheck("subtitle.cue_boundaries_on_word_boundaries", "subtitle", QCStatus.UNKNOWN, list(_SPEECH_MEASUREMENT_IDS), reason=words_reason))
+        else:
+            confirmed, unconfirmed = _check_word_boundaries(cues, words, tolerance)
+            _record(
+                checks, findings,
+                check_id="subtitle.cue_boundaries_on_word_boundaries", code="SUBTITLE_CUE_BOUNDARY_INSIDE_WORD",
+                violation_status=QCStatus.FAIL, violations=confirmed,
+                evidence={**base, "tolerance_sec": tolerance, "unconfirmed": _sorted_by_time(unconfirmed)},
+                message=f"{len(confirmed)} cue boundary(ies) fall more than {tolerance}s inside a spoken word",
+                measurement_ids=_SPEECH_MEASUREMENT_IDS,
+                unknown_reason=(f"{len(unconfirmed)} boundary(ies) fall inside a word whose timing is interpolated" if unconfirmed else None),
+            )
+
+    if wants_lead:
+        max_lead = rule.max_cue_lead_sec
+        if words is None:
+            checks.append(QCCheck("subtitle.cue_not_early", "subtitle", QCStatus.UNKNOWN, list(_SPEECH_MEASUREMENT_IDS), reason=words_reason))
+        else:
+            confirmed, unconfirmed, without_speech = _check_cue_lead(cues, by_cue, max_lead)
+            _record(
+                checks, findings,
+                check_id="subtitle.cue_not_early", code="SUBTITLE_CUE_EARLY",
+                violation_status=QCStatus.FAIL, violations=confirmed,
+                evidence={**base, "max_cue_lead_sec": max_lead, "cues_without_speech": without_speech,
+                          "unconfirmed": _sorted_by_time(unconfirmed)},
+                message=f"{len(confirmed)} cue(s) appear more than {max_lead}s before their first spoken word",
+                measurement_ids=_SPEECH_MEASUREMENT_IDS,
+                unknown_reason=(f"{len(unconfirmed)} cue(s) lead a word whose timing is interpolated" if unconfirmed else None),
+            )
+
+    if wants_coverage:
+        max_uncovered = rule.max_uncovered_speech_sec
+        if words is None:
+            checks.append(QCCheck("subtitle.speech_covered", "subtitle", QCStatus.UNKNOWN, list(_SPEECH_MEASUREMENT_IDS), reason=words_reason))
+        else:
+            extra = rule.extra_covered_intervals or []
+            confirmed, unconfirmed = _check_uncovered_speech(cues, words, extra, max_uncovered)
+            _record(
+                checks, findings,
+                check_id="subtitle.speech_covered", code="SUBTITLE_SPEECH_UNCOVERED",
+                violation_status=QCStatus.FAIL, violations=confirmed,
+                evidence={**base, "max_uncovered_speech_sec": max_uncovered,
+                          "extra_covered_intervals": [{"start": iv.start, "end": iv.end, "label": iv.label} for iv in extra],
+                          "unconfirmed": _sorted_by_time(unconfirmed)},
+                message=f"{len(confirmed)} stretch(es) of speech longer than {max_uncovered}s have no cue on screen",
+                measurement_ids=_SPEECH_MEASUREMENT_IDS,
+                unknown_reason=(f"{len(unconfirmed)} uncovered stretch(es) include words whose timing is interpolated" if unconfirmed else None),
+            )
+
+    if wants_line_starts:
+        pos_set = sorted(set(rule.forbidden_line_start_pos or []))
+        phrases = list(rule.forbidden_line_start_phrases or [])
+        pos_reason = None
+        words_usable = words is not None
+        if pos_set:
+            if words is None:
+                pos_reason = f"the pos part needs a transcript: {words_reason}"
+            elif not any(w.get("pos") is not None for w in words):
+                pos_reason = "the transcript carries no pos labels, so the pos part was not checked"
+                words_usable = True
+        violations, unverified = _check_line_starts(
+            cues, by_cue, words_usable, set(pos_set) if pos_reason is None else set(), phrases,
+        )
+        if pos_reason is None and unverified:
+            pos_reason = f"the pos of {len(unverified)} line start(s) could not be determined"
+        pos_part = {"status": "NOT_REQUESTED"} if not pos_set else (
+            {"status": "UNKNOWN", "reason": pos_reason} if pos_reason is not None else {"status": "CHECKED"}
+        )
+        _record(
+            checks, findings,
+            check_id="subtitle.no_forbidden_line_start", code="SUBTITLE_FORBIDDEN_LINE_START",
+            violation_status=QCStatus.FAIL, violations=violations,
+            evidence={**base, "scope": "each line of each cue", "forbidden_pos": pos_set, "forbidden_phrases": phrases,
+                      "pos_part": pos_part, "unverified": _sorted_by_time(unverified)},
+            message=f"{len(violations)} subtitle line(s) start with a forbidden word or phrase",
+            measurement_ids=_SPEECH_MEASUREMENT_IDS if words is not None else ["subtitle.cue_texts"],
+            unknown_reason=pos_reason,
+        )
+
+    if rule.max_total_chars is not None:
+        limit = rule.max_total_chars
+        violations = [
+            {"time_sec": _r(c.get("start")), **_cue_ref(c), "chars": c["chars"], "max_total_chars": limit,
+             "description": f"{_at(c.get('start'))} {_cue_label(c)} has {c['chars']} characters (limit {limit})"}
+            for c in cue_texts if c["chars"] > limit
+        ]
+        _record(
+            checks, findings,
+            check_id="subtitle.total_chars_within_limit", code="SUBTITLE_CUE_TOO_MANY_CHARS",
+            violation_status=QCStatus.FAIL, violations=violations,
+            evidence={"cues_checked": len(cue_texts), "max_total_chars": limit, "counting": "NFKC code points, line breaks not counted"},
+            message=f"{len(violations)} cue(s) have more than {limit} characters",
+            measurement_ids=["subtitle.cue_texts"],
+        )
+
+    if rule.min_cue_chars is not None:
+        minimum = rule.min_cue_chars
+        violations = [
+            {"time_sec": _r(c.get("start")), **_cue_ref(c), "chars": c["chars"], "min_cue_chars": minimum,
+             "description": f"{_at(c.get('start'))} {_cue_label(c)} has only {c['chars']} character(s) (minimum {minimum})"}
+            for c in cue_texts if 0 < c["chars"] < minimum
+        ]
+        _record(
+            checks, findings,
+            check_id="subtitle.cue_chars_meet_minimum", code="SUBTITLE_CUE_TOO_FEW_CHARS",
+            violation_status=QCStatus.WARN, violations=violations,
+            evidence={"cues_checked": len(cue_texts), "min_cue_chars": minimum, "counting": "NFKC code points, line breaks not counted",
+                      "empty_cues_skipped": "empty cues are reported by subtitle.no_empty_cues"},
+            message=f"{len(violations)} cue(s) have fewer than {minimum} characters",
+            measurement_ids=["subtitle.cue_texts"],
+        )
 
 
 # ---------------------------------------------------------------------------

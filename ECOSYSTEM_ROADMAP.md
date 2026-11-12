@@ -5,7 +5,7 @@ Written from a read-only audit of this repository on 2026-10-30. Each step below
 
 ## Where it stands
 
-v0.1.3, Python 3.9+ stdlib. contract, doctor, run (inspect/check/validate; video/audio/subtitle/delivery/delivery_package; 53 checks after steps 5-7). 22 test modules, CI on 3 OSes x 2 Pythons. Already an OS registry fixture.
+v1.1.0, Python 3.9+ stdlib. contract, doctor, run (inspect/check/validate; video/audio/subtitle/delivery/delivery_package; 62 checks after step 8). 29 test modules, CI on 3 OSes x 2 Pythons. Already an OS registry fixture.
 
 ## What this repository owns
 
@@ -35,6 +35,8 @@ Agent wires qc/check and qc/inspect (ADR-032); provides[] publishes qc/check as 
   - Done when: exact list PASS, 2-frame error / missing cut FAIL; agent can verify a render against its IR cut list
 - [x] **7. Text legibility** — `text_regions` contrast (WCAG, default 4.5) and per-role ink height at 1080 → `TEXT_ILLEGIBLE`, no OCR (ADR-018)
   - Done when: low-contrast and undersized regions FAIL, box outside frame UNKNOWN
+- [x] **8. Subtitle vs. speech** — opt-in `transcript` + `word_boundary_tolerance_sec` / `max_cue_lead_sec` / `max_uncovered_speech_sec` / `forbidden_line_start_pos|phrases`, `max_total_chars`, `min_cue_chars` (WARN), opt-in `preset: "ja"` (ADR-023)
+  - Done when: each check PASS/FAIL/UNKNOWN with times in evidence; transcripts without `index`/`pos` still read
 
 ## Boundaries
 
