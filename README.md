@@ -161,6 +161,14 @@ Subtitle cue-text limits and subtitle-vs-speech checks are opt-in too:
 Japanese values; the default assumes no language. See
 [docs/checks.md](docs/checks.md) and ADR-023.
 
+A stinger transition is checked opt-in with `rules.video.stinger`
+(`cut_point` and `cover` from the stinger's stinger.json): its alpha at
+the cut point must be at least 253/255 in every pixel, and, given the
+stinger `file` and the delivered video's `cut_at` times, the delivered
+frame at each cut must show the stinger's covered frame
+(`max_cut_frame_difference`). See [docs/checks.md](docs/checks.md) and
+ADR-024.
+
 `contract["provides"]` groups these checks into ten cross-repository
 Capability ids (`measure.video.freeze`, `measure.video.black_frame`,
 `measure.video.format`, `measure.audio.integrity`,

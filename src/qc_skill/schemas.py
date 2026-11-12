@@ -26,6 +26,8 @@ from .rules import (
     REFERENCE_METRICS,
     SUBTITLE_PRESETS,
     SourceCue,
+    StingerCover,
+    StingerRule,
     TEXT_ROLES,
     SubtitleRule,
     TextRegion,
@@ -180,6 +182,51 @@ def _build_text_region(item: Any) -> TextRegion:
     return TextRegion(t=t, box=[x, y, w, h], role=item["role"])
 
 
+def _build_stinger_rule(data: Any) -> StingerRule:
+    """ADR-024: ``VideoRule.stinger``. ``cut_point`` and ``cover`` are the
+    stinger maker's statement (stinger.json), passed through by the caller."""
+
+    if not isinstance(data, dict):
+        raise error("INVALID_REQUEST", "VideoRule.stinger must be an object")
+    allowed = {"cut_point", "cover", "file", "cut_at", "max_cut_frame_difference"}
+    unknown = set(data) - allowed
+    if unknown:
+        raise error("INVALID_REQUEST", f"unknown fields for VideoRule.stinger: {sorted(unknown)}")
+    if data.get("cut_point") is None:
+        raise error("INVALID_REQUEST", "VideoRule.stinger.cut_point is required (seconds on the stinger's own timeline)")
+    cut_point = _number(data["cut_point"], field_name="VideoRule.stinger.cut_point", allow_negative=False)
+    cover = None
+    if data.get("cover") is not None:
+        raw = data["cover"]
+        if not isinstance(raw, dict) or set(raw) != {"start", "end"}:
+            raise error("INVALID_REQUEST", "VideoRule.stinger.cover must be an object {start, end}")
+        start = _number(raw["start"], field_name="VideoRule.stinger.cover.start", allow_negative=False)
+        end = _number(raw["end"], field_name="VideoRule.stinger.cover.end", allow_negative=False)
+        if end <= start:
+            raise error("INVALID_REQUEST", "VideoRule.stinger.cover.end must be after its start")
+        cover = StingerCover(start=start, end=end)
+    file = data.get("file")
+    if file is not None and (not isinstance(file, str) or not file):
+        raise error("INVALID_REQUEST", "VideoRule.stinger.file must be a non-empty path string")
+    cut_at = data.get("cut_at")
+    if cut_at is not None:
+        if not isinstance(cut_at, list) or not cut_at:
+            raise error("INVALID_REQUEST", "VideoRule.stinger.cut_at must be a non-empty list of seconds")
+        cut_at = sorted(_number(t, field_name="VideoRule.stinger.cut_at[]", allow_negative=False) for t in cut_at)
+        if file is None:
+            raise error("INVALID_REQUEST", "VideoRule.stinger.cut_at needs VideoRule.stinger.file (the stinger to compare the cut frames with)")
+    limit = data.get("max_cut_frame_difference")
+    if limit is not None:
+        limit = _number(limit, field_name="VideoRule.stinger.max_cut_frame_difference", allow_negative=False)
+        if limit > 255:
+            raise error("INVALID_REQUEST", "VideoRule.stinger.max_cut_frame_difference must be between 0 and 255")
+        if cut_at is None:
+            raise error("INVALID_REQUEST", "VideoRule.stinger.max_cut_frame_difference needs VideoRule.stinger.cut_at")
+    elif cut_at is not None:
+        raise error("INVALID_REQUEST", "VideoRule.stinger.cut_at needs max_cut_frame_difference (no default: a delivery's encoding loss is yours to allow)")
+    return StingerRule(cut_point=cut_point, cover=cover, file=file, cut_at=cut_at, max_cut_frame_difference=limit)
+
+
 def _validate_video_rule_fields(kwargs: Dict[str, Any]) -> None:
     """Typed validation for the ADR-016/017/018/021 VideoRule fields, which
     carry lists/objects (or bounded scores) rather than a free scalar."""
@@ -234,6 +281,8 @@ def _validate_video_rule_fields(kwargs: Dict[str, Any]) -> None:
         if ratio < 1.0 or ratio > 21.0:
             raise error("INVALID_REQUEST", "VideoRule.min_contrast_ratio must be between 1 and 21")
         kwargs["min_contrast_ratio"] = ratio
+    if kwargs.get("stinger") is not None:
+        kwargs["stinger"] = _build_stinger_rule(kwargs["stinger"])
     if kwargs.get("min_text_height_px") is not None:
         heights = kwargs["min_text_height_px"]
         if not isinstance(heights, dict):

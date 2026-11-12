@@ -100,6 +100,21 @@ One opt-in full-reference comparison (ADR-021), `kind: video` or
   `video.reference_alignment`). Without libvmaf in the host's ffmpeg (see
   doctor `filter:libvmaf`) VMAF is UNKNOWN and SSIM/PSNR still run.
 
+One opt-in stinger check (ADR-024), any `VideoRule`; pass `cut_point`
+and `cover` from the stinger's stinger.json:
+
+- `stinger: {cut_point, cover?: {start, end}}` on the stinger file itself
+  -> `video.stinger_opaque_at_cut_point` (every pixel's alpha at least
+  253/255 at that frame, video-editing-skill's rule;
+  `VIDEO_STINGER_NOT_OPAQUE`) and `video.stinger_cut_point_in_cover`
+  (`VIDEO_STINGER_CUT_POINT_OUTSIDE_COVER`). No alpha channel, a cut point
+  between frames or an unreadable frame is UNKNOWN, never opaque.
+- on a delivered video add `file` (the stinger), `cut_at: [seconds]` (the
+  join's cut times) and `max_cut_frame_difference` (no default) ->
+  `video.stinger_cut_frame_matches` (the delivered frame at each cut vs
+  the stinger's covered frame, mean |RGB| 0-255;
+  `VIDEO_STINGER_CUT_FRAME_MISMATCH`).
+
 ## Example
 
 ```json

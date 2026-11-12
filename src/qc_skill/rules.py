@@ -26,6 +26,7 @@ from bisect import bisect_left, bisect_right
 from dataclasses import dataclass, field, replace
 from typing import Any, Dict, List, Optional, Tuple
 
+from .measurements.stinger import OPAQUE_MIN_ALPHA
 from .models import FindingSeverity, QCCheck, QCFinding, QCMeasurement, QCStatus
 
 MeasurementMap = Dict[str, QCMeasurement]
@@ -100,6 +101,33 @@ class TextRegion:
 
 
 @dataclass
+class StingerCover:
+    """The window, on the stinger's own timeline, in which its maker
+    states the graphic covers the whole picture (stinger.json ``cover``):
+    the frames at ``start <= t < end``."""
+
+    start: float
+    end: float
+
+
+@dataclass
+class StingerRule:
+    """A stinger transition to check (ADR-024). ``cut_point`` and
+    ``cover`` are the stinger maker's statement (stinger.json); qc-skill
+    reads no sidecar itself. Without ``file`` the input *is* the stinger.
+    With ``file`` (the stinger, resolved and fingerprinted like any input)
+    the input is a delivered video: the alpha is read from ``file``, and
+    each ``cut_at`` time of the input is compared with the stinger's frame
+    at its cut point (``max_cut_frame_difference``, no default)."""
+
+    cut_point: float
+    cover: Optional[StingerCover] = None
+    file: Optional[str] = None
+    cut_at: Optional[List[float]] = None
+    max_cut_frame_difference: Optional[float] = None
+
+
+@dataclass
 class VideoRule:
     expected_width: Optional[int] = None
     expected_height: Optional[int] = None
@@ -140,6 +168,8 @@ class VideoRule:
     min_vmaf: float = 93.0  # Rassool 2017 (RealNetworks), "VMAF Reproducibility": ~93 = indistinguishable or not annoying
     min_ssim: float = 0.95  # Zinner et al. 2010 SSIM->MOS mapping (Moldovan et al. 2014, Table I): >= 0.95 = 4 (Good)
     min_psnr_db: float = 31.0  # Ke et al. 2008 PSNR->MOS mapping (Moldovan et al. 2014, Table I): >= 31 dB = 4 (Good)
+    # --- stinger cut point (ADR-024) ---
+    stinger: Optional[StingerRule] = None  # opt-in: alpha at the cut point; with file + cut_at, the delivered cut frames
 
 
 def evaluate_video(
@@ -478,6 +508,10 @@ def evaluate_video(
     if rule.reference_metrics:
         _evaluate_reference_metrics(checks, findings, measurements, rule)
 
+    # --- policy: stinger cut point (ADR-024) ---
+    if rule.stinger is not None:
+        _evaluate_stinger(checks, findings, measurements, rule.stinger)
+
     return checks, findings
 
 
@@ -663,6 +697,101 @@ def _evaluate_reference_metrics(checks: List[QCCheck], findings: List[QCFinding]
             checks, findings, measurements, check_id="video.psnr_meets_minimum", measurement_id="video.psnr_db",
             minimum=rule.min_psnr_db, code="VIDEO_PSNR_BELOW_MINIMUM", label="PSNR (dB)",
         )
+
+
+def _evaluate_stinger(checks: List[QCCheck], findings: List[QCFinding], measurements: MeasurementMap, rule: StingerRule) -> None:
+    """ADR-024. The declared cover window, the measured alpha at the cut
+    point, and (with ``cut_at``) the delivered frames at the cuts - each
+    its own check, so a stinger.json that names the wrong frame, a graphic
+    with a hole, and a stinger placed off the cut are told apart."""
+
+    cut_point = rule.cut_point
+    if rule.cover is not None:
+        cover = {"start": rule.cover.start, "end": rule.cover.end}
+        inside = rule.cover.start <= cut_point < rule.cover.end
+        evidence = {"cut_point": cut_point, "cover": cover}
+        check = QCCheck("video.stinger_cut_point_in_cover", "video", QCStatus.PASS if inside else QCStatus.FAIL, [], evidence=evidence)
+        if not inside:
+            f = QCFinding(
+                "VIDEO_STINGER_CUT_POINT_OUTSIDE_COVER", FindingSeverity.FAIL,
+                f"{_at(cut_point)} the stated cut point is outside the stated cover window "
+                f"[{rule.cover.start}, {rule.cover.end})s",
+                evidence=evidence, timestamp=cut_point,
+            )
+            findings.append(f)
+            check.finding_codes.append(f.code)
+        checks.append(check)
+
+    ids = ["video.stinger_cut_point_alpha"]
+    alpha = _val(measurements, "video.stinger_cut_point_alpha")
+    if not alpha or not alpha.get("measured"):
+        reason = (alpha or {}).get("reason") or "the stinger's alpha at its cut point was not measured"
+        check = _unknown_check("video.stinger_opaque_at_cut_point", "video", reason, ids)
+        check.evidence = {"alpha": alpha}
+        checks.append(check)
+    else:
+        covered = alpha["pixels_below"] == 0
+        check = QCCheck(
+            "video.stinger_opaque_at_cut_point", "video", QCStatus.PASS if covered else QCStatus.FAIL, ids,
+            evidence={"alpha": alpha},
+        )
+        if not covered:
+            f = QCFinding(
+                "VIDEO_STINGER_NOT_OPAQUE", FindingSeverity.FAIL,
+                f"{_at(cut_point)} frame {alpha['frame']} of the stinger: {alpha['pixels_below']} of {alpha['pixels']} pixels "
+                f"have alpha below {OPAQUE_MIN_ALPHA}/255 (lowest {alpha['min_alpha_255']}/255), so the picture under it shows through",
+                evidence={"alpha": alpha}, measurement_ids=ids, timestamp=cut_point,
+            )
+            findings.append(f)
+            check.finding_codes.append(f.code)
+        checks.append(check)
+
+    if rule.cut_at:
+        _evaluate_stinger_cut_frames(checks, findings, measurements, rule)
+
+
+def _evaluate_stinger_cut_frames(checks: List[QCCheck], findings: List[QCFinding], measurements: MeasurementMap, rule: StingerRule) -> None:
+    ids = ["video.stinger_cut_frames"]
+    frames = _val(measurements, "video.stinger_cut_frames")
+    limit = rule.max_cut_frame_difference
+    if not frames:
+        checks.append(_unknown_check("video.stinger_cut_frame_matches", "video", "the delivered cut frames were not measured", ids))
+        return
+    failing, unmeasured = [], []
+    for c in frames.get("cuts", []):
+        if not c.get("measured"):
+            unmeasured.append({"cut_at": c["cut_at"], "reason": c.get("reason")})
+        elif c["difference"] > limit:
+            failing.append({
+                **c, "time_sec": c["cut_at"],
+                "description": (
+                    f"{_at(c['cut_at'])} frame {c['frame']} differs from the stinger's frame at its cut point by "
+                    f"{c['difference']} (mean |RGB|, 0-255), more than {limit}"
+                ),
+            })
+    evidence = {
+        "stinger_frame": frames.get("stinger_frame"), "cuts": frames.get("cuts", []),
+        "max_cut_frame_difference": limit, "violations": failing, "unmeasured": unmeasured,
+    }
+    if failing:
+        status = QCStatus.FAIL
+    elif unmeasured:
+        status = QCStatus.UNKNOWN
+    else:
+        status = QCStatus.PASS
+    check = QCCheck(
+        "video.stinger_cut_frame_matches", "video", status, ids, evidence=evidence,
+        reason=("; ".join(f"{u['cut_at']}s: {u['reason']}" for u in unmeasured) if status == QCStatus.UNKNOWN else None),
+    )
+    if failing:
+        f = QCFinding(
+            "VIDEO_STINGER_CUT_FRAME_MISMATCH", FindingSeverity.FAIL,
+            f"{len(failing)} cut frame(s) do not show the stinger's frame at its cut point (limit {limit})",
+            evidence=evidence, measurement_ids=ids, timestamp=failing[0]["cut_at"],
+        )
+        findings.append(f)
+        check.finding_codes.append(f.code)
+    checks.append(check)
 
 
 # ---------------------------------------------------------------------------

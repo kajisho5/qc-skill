@@ -860,3 +860,77 @@ is out of scope, `not_provided`). The transcript a pipeline already has
 The six checks join no `provides` Capability group: CAPABILITY_MATRIX.md
 assigns no id for them yet, so they are in `contract.UNGROUPED_CHECKS`
 (ADR-014 precedent).
+
+## ADR-024: a stinger's cut point is checked by its alpha at that frame, and a delivered cut by the frame it shows
+
+video-editing-skill's stinger transition (its ADR-023/ADR-032) switches
+clips at the stinger's cut point, the frame where the graphic covers the
+whole picture, and refuses a stinger whose frame there is not opaque.
+Its roadmap step 13 and hyperframes-skill's step 15 name a qc-skill
+stinger cut-point check as an acceptance point, on the stinger and on
+the edited result. qc-skill had none.
+
+- **Rule.** `VideoRule.stinger: {cut_point, cover?, file?, cut_at?,
+  max_cut_frame_difference?}`. `cut_point` and `cover` are the stinger
+  maker's statement (stinger.json); the caller passes them, as it does to
+  video-editing-skill, and qc-skill opens no sidecar. Without `file` the
+  input is the stinger. With `file` the input is a delivered video: the
+  stinger is a second input, resolved and fingerprinted by content like
+  `SubtitleRule.transcript` (ADR-023; `stinger:<sha256>` in the asset
+  fingerprints, the path replaced in the rules payload), and `cut_at`
+  names the cut times on the delivered timeline. A rule field rather
+  than a top-level key because it only matters to the video rule that
+  names it, and a delivery package can name one per video artifact.
+- **The frame.** `round(cut_point * frame_rate)` with the exact
+  `r_frame_rate` fraction; a time more than 1/1000 of a frame from a
+  frame is UNKNOWN (video-editing-skill refuses it the same way). The
+  frame is decoded after an input seek to a quarter frame before it, and
+  the decoded frame's timestamp must name that frame - a seek that lands
+  elsewhere is UNKNOWN with the time it landed on, never a neighbouring
+  frame measured in its place.
+- **Opaque rule.** The same as video-editing-skill's: every pixel's
+  alpha at least 253 of 255 (2 of 255 of tolerance), compared at the
+  plane's native bit depth as `alpha * 255 >= 253 * max` (65021 = 253 *
+  257 at 16 bit, as there). The alpha plane comes from ffmpeg
+  `extractplanes=a` at its own depth (`gray`, `gray10le`, `gray12le`,
+  ...), read in Python; no rescaling step stands between the decoder and
+  the comparison. It is a fixed rule, not a rule field: the point is to
+  agree with the editor that cut there.
+- **No alpha is UNKNOWN.** Whether a pixel format has alpha comes from
+  ffprobe's own pixel-format flags (`-show_pixel_formats`), checked
+  before anything is decoded: some filters would add an opaque alpha to
+  a stream without one, and that must never read as "covered".
+- **Delivered cuts.** At a cut under full cover the delivered frame is
+  the stinger's frame, so the check compares the delivered frame at
+  each `cut_at` with the stinger's frame at `cut_point` (scaled to the
+  delivered size): mean absolute difference of 8-bit RGB.
+  `max_cut_frame_difference` has no default, because the difference left
+  by a correct cut is the delivery's encoding loss, which only the caller
+  knows; docs/checks.md gives measured numbers to start from.
+  Neighbouring frames are reported as context, not judged: a stinger
+  that holds full cover for several frames makes them equal, and that is
+  not a defect.
+- **Not `video.cuts_match_expected`.** Reusing ADR-017's scdet matching
+  was considered first and measured: on the test edit (one join at 2.0
+  s) scdet reports 1.5, 1.933, 2.0, 2.1 and 2.7 s - the graphic's own
+  steps - and a stinger placed one frame late shifts each by a frame,
+  inside the default tolerance; on a smooth wipe it reports no cut at
+  all. A switch under full cover is invisible by design, so a
+  scene-change detector cannot locate it.
+- **Three checks**, so the three ways a stinger cut goes wrong are told
+  apart: `video.stinger_cut_point_in_cover` (the statement contradicts
+  itself: `VIDEO_STINGER_CUT_POINT_OUTSIDE_COVER`),
+  `video.stinger_opaque_at_cut_point` (a hole in the graphic, or a
+  stinger.json naming the wrong frame: `VIDEO_STINGER_NOT_OPAQUE`) and
+  `video.stinger_cut_frame_matches` (the stinger placed off the cut:
+  `VIDEO_STINGER_CUT_FRAME_MISMATCH`). Each finding carries the time in
+  seconds and the measured values. An unreadable stinger file, a frame
+  that cannot be decoded and a stream without alpha are UNKNOWN with the
+  reason; a missing stinger file is `MISSING_INPUT`, as a missing
+  transcript is.
+
+What is not checked: only the cut frame, not every frame of the stated
+cover window (that frame is where the clips switch, as in
+video-editing-skill), and not which clip shows before and after the cut
+(qc-skill is not given the clips). The checks join no `provides`
+Capability group (ADR-014 precedent).

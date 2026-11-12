@@ -202,6 +202,7 @@ def build_all(out_dir: Path) -> Dict[str, Path]:
 
     _build_visual_qc_fixtures(out_dir, paths)
     _build_reference_fixtures(out_dir, paths)
+    _build_stinger_fixtures(out_dir, paths)
     return paths
 
 
@@ -293,3 +294,56 @@ def _build_reference_fixtures(out_dir: Path, paths: Dict[str, Path]) -> None:
     short = out_dir / "ref_short.mp4"
     _run("-i", str(master), "-frames:v", "25", "-c:v", "libx264", "-crf", "1", "-pix_fmt", "yuv420p", str(short))
     paths["ref_short"] = short
+
+
+# ADR-024: a 30 fps, 64x36 stinger whose graphic (light grey, 230) covers the
+# left half for frames 0-12, three quarters for frames 13-14, the whole
+# picture for frames 15-17 (0.5 s to 0.6 s: cut point 0.5 s, cover [0.5, 0.6))
+# and the right half from frame 18 to its end (1.2 s, 36 frames).
+STINGER_ALPHA = (
+    "if(lte(N,12), if(lt(X,W/2),255,0), if(lte(N,14), if(lt(X,3*W/4),255,0), "
+    "if(lte(N,17), 255, if(gte(X,W/2),255,0))))"
+)
+
+
+def _build_stinger_fixtures(out_dir: Path, paths: Dict[str, Path]) -> None:
+    """ADR-024 fixtures: stingers with alpha and edits made with them."""
+
+    wipe = out_dir / "stinger_wipe.mov"  # QuickTime Animation, 8-bit argb
+    _run(
+        "-f", "lavfi", "-i",
+        f"color=c=black:s=64x36:r=30:d=1.2,format=rgba,geq=r='230':g='230':b='230':a='{STINGER_ALPHA}'",
+        "-c:v", "qtrle", str(wipe),
+    )
+    paths["stinger_wipe"] = wipe
+
+    prores = out_dir / "stinger_prores.mov"  # ProRes 4444: alpha decoded at more than 8 bits
+    _run("-i", str(wipe), "-c:v", "prores_ks", "-profile:v", "4444", "-pix_fmt", "yuva444p10le", str(prores))
+    paths["stinger_prores"] = prores
+
+    # Frame 10: every alpha exactly 253 (opaque by the rule); frame 20: one
+    # pixel at 252 (not); every other frame transparent.
+    edge = out_dir / "stinger_edge.mov"
+    _run(
+        "-f", "lavfi", "-i",
+        "color=c=black:s=64x36:r=30:d=1,format=rgba,geq=r='230':g='230':b='230':"
+        "a='if(eq(N,10),253,if(eq(N,20),if(eq(X,0)*eq(Y,0),252,255),0))'",
+        "-c:v", "qtrle", str(edge),
+    )
+    paths["stinger_edge"] = edge
+
+    # Red 2 s then blue 2 s, joined at frame 60 (2.0 s), the stinger laid
+    # over the join so its frame 15 lands on frame 60 (starting at 1.5 s);
+    # "late" starts it one frame later, so frame 60 shows its frame 14.
+    for name, start_frames in (("stinger_edit", 45), ("stinger_edit_late", 46)):
+        path = out_dir / f"{name}.mp4"
+        _run(
+            "-f", "lavfi", "-i", "color=c=red:s=64x36:r=30:d=2",
+            "-f", "lavfi", "-i", "color=c=blue:s=64x36:r=30:d=2",
+            "-i", str(wipe),
+            "-filter_complex",
+            f"[0:v][1:v]concat=n=2:v=1[base];[2:v]setpts=PTS+{start_frames}/(30*TB)[st];"
+            "[base][st]overlay=eof_action=pass[out]",
+            "-map", "[out]", "-c:v", "libx264", "-crf", "18", "-pix_fmt", "yuv420p", str(path),
+        )
+        paths[name] = path
