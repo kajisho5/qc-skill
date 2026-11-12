@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.2.0 - 2026-11-12
+
+- feat(video): opt-in stinger cut-point checks (ADR-024) (#32) (a475cb9)
+
 ## v1.1.1 - 2026-11-12
 
 - fix(subtitle): check the rule's own line/duration/gap limits (#31) (5b1c97a)
