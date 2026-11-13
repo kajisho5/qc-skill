@@ -296,9 +296,9 @@ measurement is refused with the reason. A loop needs at least 3 frames.
 |---|---|---|
 | `video.loop_seam_within_limit` | `loop_seam.max_seam_ratio` | `VIDEO_LOOP_SEAM_JUMP` when the ratio is above the limit (exactly the limit passes) or the seam jumps out of a still picture; evidence: the seam's frames and times, the ratio, the reference and every inside step; `timestamp` is the loop's last frame |
 
-Suggested `max_seam_ratio`: on the 64x36 test loops (H.264 crf 12) a
-seamless orbit measures 0.87 and a pan cut on its whole period 1.01;
-the same loops one frame short measure 1.60 and 1.99. Start at 1.3.
+Suggested `max_seam_ratio`: on the 64x36 test loops (lossless H.264) a
+seamless orbit measures 0.89 and a pan cut on its whole period 1.00;
+the same loops one frame short measure 1.70 and 1.99. Start at 1.3.
 
 #### Alpha edges (`VideoRule.alpha_edge`, ADR-027)
 
@@ -388,8 +388,9 @@ Measured on ffmpeg-skill's `export --preset key-fill` chain (ProRes 422
 HQ fill and key, straight fill): the pair passes with every frame at 0
 pixels off; the key a frame late fails at frame 1 (16 pixels, the box's
 leading edge); one pixel lit under alpha 0 fails at frame 10 (1 pixel).
-A soft alpha through the same chain writes the key's luma at full range
-in a stream tagged with no range: read as limited it fails, with
+A soft alpha through the same chain on ffmpeg 6.1 writes the key's luma
+at full range in a stream not marked full range (ffmpeg 7.1 and later
+convert it for the ProRes encoder): read as limited it fails, with
 `key_range: "full"` it passes.
 
 ## Audio (`kind: "audio"`, and `kind: "delivery"` when an audio stream is present)

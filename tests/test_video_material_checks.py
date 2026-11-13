@@ -188,7 +188,7 @@ def test_loop_cut_one_frame_short_fails_with_the_seam_frames(media, workspace, n
     assert check["status"] == "FAIL"
     seam = check["evidence"]["seam"]
     assert (seam["from_frame"], seam["to_frame"]) == (last, 0)
-    assert check["evidence"]["ratio"] > 1.5
+    assert check["evidence"]["ratio"] > 1.5  # about 2 frames of motion at once
     finding = _finding(resp, "VIDEO_LOOP_SEAM_JUMP")
     assert finding["timestamp"] == pytest.approx(last / 30, abs=1e-6)
     assert f"the loop's last frame {last} -> its first frame 0 steps by" in finding["message"]
@@ -385,7 +385,7 @@ def test_size_frame_count_or_timing_mismatch_fails_before_any_pixel(media, works
     assert "no frame was compared" in _finding(resp, "VIDEO_KEY_FILL_MISMATCH")["message"]
 
 
-def test_untagged_full_range_key_is_read_as_limited_unless_told(media, workspace):
+def test_full_range_key_not_marked_full_is_read_as_limited_unless_told(media, workspace):
     resp = run(_kf_doc(media, "kf_soft_source", "kf_soft_key"), workspace)
     assert checks_by_id(resp)["video.key_fill_match"]["status"] == "FAIL"
     assert _value(resp, "video.key_fill_frames")["key_range"] == "limited"

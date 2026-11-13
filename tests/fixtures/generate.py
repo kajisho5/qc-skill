@@ -419,10 +419,11 @@ def _build_loop_seam_fixtures(out_dir: Path, paths: Dict[str, Path]) -> None:
 # ellipse every 30 frames (a seamless loop like a rendered title loop);
 # PAN is a texture periodic in 32 px panned 1 px a frame, so 32 frames are
 # one whole period. "_short" drops the last frame: the seam then steps two
-# frames' worth.
+# frames' worth. Lossless H.264, so the measured ratios do not move with
+# the encoder's version.
 ORBIT = (
     "255*exp(-((X-32-12*cos(2*PI*{n}/30))*(X-32-12*cos(2*PI*{n}/30))"
-    "+(Y-18-8*sin(2*PI*{n}/30))*(Y-18-8*sin(2*PI*{n}/30)))/18)"
+    "+(Y-18-8*sin(2*PI*{n}/30))*(Y-18-8*sin(2*PI*{n}/30)))/50)"
 )
 PAN = "128+90*sin(2*PI*(X+N)/32)*cos(2*PI*Y/18)"
 # ADR-028: a 230/200/60 box, 24x16 px, moving right 1 px a frame over black.
@@ -435,7 +436,7 @@ PRORES_4444 = ["-c:v", "prores_ks", "-profile:v", "4444", "-pix_fmt", "yuva444p1
 def _gray_loop(path: Path, lum: str, frames: int) -> None:
     _run(
         "-f", "lavfi", "-i", f"color=c=black:s=64x36:r=30:d=4,format=gray,geq=lum='{lum}'",
-        "-frames:v", str(frames), "-c:v", "libx264", "-crf", "12", "-pix_fmt", "yuv420p", str(path),
+        "-frames:v", str(frames), "-c:v", "libx264", "-crf", "0", "-pix_fmt", "yuv420p", str(path),
     )
 
 
@@ -525,13 +526,21 @@ def _build_video_material_fixtures(out_dir: Path, paths: Dict[str, Path]) -> Non
     tc = out_dir / "kf_key_tc.mov"
     _run("-i", str(paths["kf_key"]), "-timecode", "10:00:00:00", *PRORES_HQ, str(tc))
     paths["kf_key_tc"] = tc
-    # A soft alpha ramp (0, 4, ..., 252 across x) through the same chain: the key
-    # holds the alpha at full range in a stream that does not say so.
+    # A soft alpha ramp (0, 4, ..., 252 across x) and its key holding the
+    # alpha at full range (10-bit luma 4 * alpha) in a stream not marked full
+    # range - what ffmpeg 6.1's alphaextract -> yuv422p10le writes for the
+    # key. setrange=tv stops ffmpeg 7.1+ from converting the values for the
+    # ProRes encoder, so the stored values are the same on every version.
     soft = out_dir / "kf_soft_source.mov"
     _run(
         "-f", "lavfi", "-i", "color=c=black:s=64x36:r=30:d=0.2,format=rgba,geq=r='230':g='230':b='230':a='X*4'",
         *PRORES_4444, str(soft),
     )
     paths["kf_soft_source"] = soft
-    _key_fill_pair(soft, out_dir / "kf_soft_fill.mov", out_dir / "kf_soft_key.mov")
-    paths["kf_soft_key"] = out_dir / "kf_soft_key.mov"
+    soft_key = out_dir / "kf_soft_key.mov"
+    _run(
+        "-f", "lavfi", "-i",
+        "color=c=black:s=64x36:r=30:d=0.2,format=yuv422p10le,geq=lum='X*16':cb=512:cr=512,setrange=tv",
+        *PRORES_HQ, str(soft_key),
+    )
+    paths["kf_soft_key"] = soft_key

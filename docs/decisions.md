@@ -1124,9 +1124,9 @@ from anywhere else, or after a transfer, had no check.
   how to read it; unknown is read as limited (video black transparent,
   video white opaque), the broadcast convention ffmpeg-skill's
   documentation states. ffmpeg's `alphaextract,format=yuv422p10le`
-  writes the alpha at full range into a stream that carries no range
-  tag (measured with ffmpeg 6.1): a binary alpha reads the same either
-  way, a soft one does not. `key_range` overrides the reading so such a
+  writes the alpha at full range into a stream not marked full range
+  (measured with ffmpeg 6.1; 7.1 and later convert it for the ProRes
+  encoder): a binary alpha reads the same either way, a soft one does not. `key_range` overrides the reading so such a
   key can be checked as what it holds; the default stays limited because
   that is how a switcher reads an untagged key. The Y plane is read as
   stored (`extractplanes=y`) and mapped in Python: the first version let
