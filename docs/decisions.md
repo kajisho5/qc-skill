@@ -1008,3 +1008,127 @@ used to reach a rule as a limit that every value fails (NaN) or passes
 
 The three checks join no `provides` Capability group (ADR-014
 precedent).
+
+## ADR-026: a video loop's seam is its last -> first frame step against the median step inside the loop next to it, with no default limit
+
+The title, stinger and loop material hyperframes-skill renders was
+checked on its seam only by the renderer itself; qc-skill's loop-seam
+check (ADR-025) is for audio. A loop is seen end -> start, so the step to
+judge is the loop's last frame to its first.
+
+- **Rule.** `VideoRule.loop_seam: {window_frames?, segments?,
+  max_seam_ratio?}`. Declaring the file a loop is the rule's presence.
+  `max_seam_ratio` has no default (ADR-005: none is a standard); without
+  it the seam is measured and reported, not judged. `window_frames`
+  (1-12, default 4) is a measuring window, not a limit, so it has one;
+  12 keeps the frames held in memory to 26.
+- **Segments.** With title.json's `segments: {in, loop, out}` the loop is
+  `in <= t < in + loop` of the full clip, so the clip motion-graphics-skill
+  places can be checked without the separate `.loop` file. Both ends must
+  be on a frame (the 1/1000-of-a-frame rule of ADR-024); `out` is taken
+  as stated and not compared with the clip's length. A `loop` of 0 is
+  refused: a title without a loop has no seam.
+- **Relative, not absolute.** The seam's mean |RGB| (0-255) is divided
+  by the median of the consecutive-frame steps in the window on both
+  sides, so one limit serves a slow drift and a fast move: continuous
+  motion measures about 1 and a loop one frame short about 2 (it shows
+  two frames' worth of motion at once). The median, not the mean or the
+  maximum, keeps one cut or flash inside the window from setting the
+  reference. On a still picture the ratio is undefined; a still seam is 0
+  and any step out of a still picture fails, never a number made up to
+  fit (as ADR-025's click out of silence).
+- **Frames.** The two windows are decoded with one ffmpeg run each, by
+  an input seek to a quarter frame before, every frame's timestamp
+  checked (ADR-024's rule, now shared in `measurements/frames.py`). The
+  file's last frame is the packet count's; one frame more is asked for,
+  and if it comes the file is UNKNOWN rather than judged at a wrong end.
+  RGB at the stream's own size, not luma or a scaled copy: a colour-only
+  jump or a one-pixel detail would vanish in either.
+- **Evidence.** The seam's frame pair and times, the ratio, the
+  reference and every inside step; the finding's `timestamp` is the
+  loop's last frame.
+
+## ADR-027: alpha edges are checked at the declared mode: premultiplied constrains the pixels, and both modes are composited over black and white against the graphic's own colour
+
+A lower third or stinger declared straight but delivered premultiplied
+(or the reverse) shows a dark or light outline in every edit it is
+placed in. title.json / stinger.json state the mode (`alpha`); nothing
+checked it.
+
+- **Rule.** `VideoRule.alpha_edge: {alpha_mode, times?,
+  max_fringe_px?}`. `alpha_mode` is required: it is the material's
+  statement and is never guessed from the pixels. `times` picks the
+  frames; by default 5 spread from the first to the last (the edges of a
+  title exist in most of its frames, and every frame of a long clip in
+  pure Python would be slow). `max_fringe_px` has no default.
+- **Mode check.** Premultiplied means no colour above its alpha (2/255
+  of rounding allowed). Straight allows any colour at any alpha, so the
+  check passes for it once the frames are read; a premultiplied file
+  declared straight cannot be told from its pixels alone (a dark graphic
+  is both) and is caught by the fringe check instead.
+- **Fringe.** A halo is an edge pixel that composites darker or lighter
+  than the graphic would at that alpha. The graphic's colour is not
+  known, so it is carried in from the nearest opaque pixels ring by ring
+  (at most 8 px deep), and each partly transparent pixel is composited
+  over black and over white with the declared formula against that
+  colour at the same alpha. Over black, a straight file read as
+  premultiplied brightens by `c * (1 - a)`; over white, premultiplied
+  read as straight darkens; both backgrounds are computed so each error
+  shows where it is visible. 16/255 marks a fringe pixel: the right mode
+  measured at most 1.1/255 on the test material (rounding of ffmpeg's
+  premultiply) and the wrong one 21-57/255 across the ramp. A fixed
+  constant, like ADR-024's 253/255, not a rule field: the caller's
+  judgment is the width.
+- **Width.** For each fringe pixel, the shorter of its horizontal and
+  vertical runs: a band along a vertical edge measures its thickness, not
+  the edge's length, and a shallow diagonal edge is not counted along its
+  rows. The frame's width is the largest.
+- **Not judged.** Partly transparent pixels with no opaque pixel within
+  8 px (a glow or a soft shadow alone) have no graphic colour to compare
+  with; a frame with only those is UNKNOWN for the fringe. A soft effect
+  of another colour drawn against opaque fill reads as a fringe; that is
+  documented, not hidden.
+- **No alpha** (by ffprobe's pixel-format flags) is UNKNOWN for both
+  checks, as for the stinger.
+
+## ADR-028: a key / fill pair is matched on size, rate, frame count and timing first, then frame by frame on the key against the fill's alpha or the fill's luma outside the key
+
+A key one frame late, or a fill that leaks outside the key, shows as a
+flash or an outline on a broadcast switcher. ffmpeg-skill's
+`export --preset key-fill` checks its own pair when it writes it; a pair
+from anywhere else, or after a transfer, had no check.
+
+- **Rule.** `VideoRule.key_fill: {key_file, tolerance?,
+  max_off_fraction?, key_range?}`; the input is the fill. The key is a
+  second input like the stinger file (ADR-024): resolved through the path
+  policy, fingerprinted by content (`key:<sha256>`, path replaced in the
+  rules payload), `provenance.key_input`.
+- **Pair first.** Width, height, exact frame rate, frame count (ffprobe
+  packets, demuxed without decoding), start time (half a frame) and the
+  timecode tag must match before a pixel is decoded: a frame-count
+  mismatch makes every later comparison meaningless, and the roadmap
+  asks for it to fail first.
+- **Frames.** Every frame, not a sample: a key off by one frame on a
+  short move shows only on those frames. Chunks of at most 32 MiB per
+  file keep memory bounded on long material; each frame's timestamp is
+  checked. With an alpha in the fill, the key must equal it within
+  `tolerance` (default 2/255, ffmpeg-skill's own `key_level`
+  tolerance). Without one, the fill must be black where the key is: its
+  luma at most `tolerance` wherever the key is at most `tolerance`.
+  Luma, because a 4:2:2 fill's chroma reaches past every vertical edge by
+  construction (4% of the moving-box pair's pixels by RGB, none by
+  luma). `max_off_fraction` (default 0) allows isolated codec outliers
+  when a caller needs to; the evidence gives the first differing frame,
+  its share of pixels off and how many frames differ.
+- **Key range.** A key is a luma matte. Its stream's `color_range` says
+  how to read it; unknown is read as limited (video black transparent,
+  video white opaque), the broadcast convention ffmpeg-skill's
+  documentation states. ffmpeg's `alphaextract,format=yuv422p10le`
+  writes the alpha at full range into a stream that carries no range
+  tag (measured with ffmpeg 6.1): a binary alpha reads the same either
+  way, a soft one does not. `key_range` overrides the reading so such a
+  key can be checked as what it holds; the default stays limited because
+  that is how a switcher reads an untagged key.
+
+The four checks of ADR-026/027/028 join no `provides` Capability group
+(ADR-014 precedent).

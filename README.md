@@ -174,6 +174,14 @@ the wrap (end -> start) and any listed seams are measured for a click, a
 level step and a change of spectral shape, each against a limit you set
 (none has a default). See [docs/checks.md](docs/checks.md) and ADR-025.
 
+Title, stinger and loop material is checked opt-in with three more
+`rules.video` fields: `loop_seam` (the loop's last -> first frame step
+against the motion inside it, optionally on title.json's `segments`),
+`alpha_edge` (the declared `straight` / `premultiplied` mode and the edge
+fringe it composites with) and `key_fill` (a key / fill pair: size,
+rate, frame count and timing, then every frame). See
+[docs/checks.md](docs/checks.md) and ADR-026/027/028.
+
 `contract["provides"]` groups these checks into ten cross-repository
 Capability ids (`measure.video.freeze`, `measure.video.black_frame`,
 `measure.video.format`, `measure.audio.integrity`,

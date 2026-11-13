@@ -129,6 +129,47 @@ class StingerRule:
 
 
 @dataclass
+class VideoLoopRule:
+    """A video loop to check at its seam (ADR-026). Declaring the file a
+    loop is the rule's presence. ``segments`` is the material's title.json
+    ``{in, loop, out}`` (seconds); without it the whole file is the loop.
+    ``max_seam_ratio`` has no default: without it the seam is measured and
+    reported, not judged."""
+
+    window_frames: Optional[int] = None  # frames each side of the seam the motion inside is read from (default 4)
+    segments: Optional[Dict[str, float]] = None
+    max_seam_ratio: Optional[float] = None
+
+
+@dataclass
+class AlphaEdgeRule:
+    """Alpha-edge checks for title and stinger material (ADR-027).
+    ``alpha_mode`` is the mode the material declares (title.json /
+    stinger.json ``alpha``, or the caller's own). ``times`` are the frames
+    to read (seconds; default 5 spread over the file). ``max_fringe_px``
+    has no default: without it the fringe is measured, not judged."""
+
+    alpha_mode: str
+    times: Optional[List[float]] = None
+    max_fringe_px: Optional[int] = None
+
+
+@dataclass
+class KeyFillRule:
+    """A key / fill pair (ADR-028): the input is the fill, ``key_file``
+    the key (resolved and fingerprinted like any input)."""
+
+    key_file: str
+    tolerance: Optional[int] = None  # of 255 (default 2)
+    max_off_fraction: Optional[float] = None  # share of a frame's pixels allowed off (default 0)
+    key_range: Optional[str] = None  # "limited" | "full"; default: the key stream's color_range, unknown = limited
+
+
+ALPHA_MODES = ("straight", "premultiplied")
+KEY_RANGES = ("limited", "full")
+
+
+@dataclass
 class VideoRule:
     expected_width: Optional[int] = None
     expected_height: Optional[int] = None
@@ -171,6 +212,10 @@ class VideoRule:
     min_psnr_db: float = 31.0  # Ke et al. 2008 PSNR->MOS mapping (Moldovan et al. 2014, Table I): >= 31 dB = 4 (Good)
     # --- stinger cut point (ADR-024) ---
     stinger: Optional[StingerRule] = None  # opt-in: alpha at the cut point; with file + cut_at, the delivered cut frames
+    # --- title, stinger and loop material (ADR-026/027/028) ---
+    loop_seam: Optional[VideoLoopRule] = None  # opt-in: the loop's last frame -> first against the motion inside
+    alpha_edge: Optional[AlphaEdgeRule] = None  # opt-in: declared alpha mode and edge fringe on sampled frames
+    key_fill: Optional[KeyFillRule] = None  # opt-in: the input is a fill, checked frame by frame against its key
 
 
 def evaluate_video(
@@ -513,6 +558,14 @@ def evaluate_video(
     if rule.stinger is not None:
         _evaluate_stinger(checks, findings, measurements, rule.stinger)
 
+    # --- policy: title, stinger and loop material (ADR-026/027/028) ---
+    if rule.loop_seam is not None and rule.loop_seam.max_seam_ratio is not None:
+        _evaluate_video_loop_seam(checks, findings, measurements, rule.loop_seam)
+    if rule.alpha_edge is not None:
+        _evaluate_alpha_edge(checks, findings, measurements, rule.alpha_edge)
+    if rule.key_fill is not None:
+        _evaluate_key_fill(checks, findings, measurements)
+
     return checks, findings
 
 
@@ -749,6 +802,183 @@ def _evaluate_stinger(checks: List[QCCheck], findings: List[QCFinding], measurem
 
     if rule.cut_at:
         _evaluate_stinger_cut_frames(checks, findings, measurements, rule)
+
+
+def _evaluate_video_loop_seam(
+    checks: List[QCCheck], findings: List[QCFinding], measurements: MeasurementMap, rule: VideoLoopRule,
+) -> None:
+    """ADR-026. The seam's step over the median step inside the loop next
+    to it; exactly the limit passes."""
+
+    ids = ["video.loop_seam"]
+    value = _val(measurements, "video.loop_seam")
+    limit = rule.max_seam_ratio
+    if not value or not value.get("measured"):
+        reason = (value or {}).get("reason") or "the loop seam was not measured"
+        check = _unknown_check("video.loop_seam_within_limit", "video", reason, ids)
+        check.evidence = {"loop_seam": value, "max_seam_ratio": limit}
+        checks.append(check)
+        return
+    seam = value["seam"]
+    ratio = value["ratio"]
+    jumps = value["still"] or ratio > limit
+    evidence = {
+        "seam": seam, "ratio": ratio, "reference": value["reference"], "still": value["still"],
+        "inside": value["inside"], "loop": value["loop"], "max_seam_ratio": limit,
+    }
+    check = QCCheck("video.loop_seam_within_limit", "video", QCStatus.FAIL if jumps else QCStatus.PASS, ids, evidence=evidence)
+    if jumps:
+        if value["still"]:
+            what = f"jumps by {seam['difference']} (mean |RGB|, 0-255) out of a still picture"
+        else:
+            what = (
+                f"steps by {seam['difference']} (mean |RGB|, 0-255), {ratio} times the median step inside the loop "
+                f"({value['reference']}), more than {limit}"
+            )
+        f = QCFinding(
+            "VIDEO_LOOP_SEAM_JUMP", FindingSeverity.FAIL,
+            f"{_at(seam['from_time'])} the loop's last frame {seam['from_frame']} -> its first frame {seam['to_frame']} {what}",
+            evidence=evidence, measurement_ids=ids, timestamp=seam["from_time"],
+        )
+        findings.append(f)
+        check.finding_codes.append(f.code)
+    checks.append(check)
+
+
+def _evaluate_alpha_edge(checks: List[QCCheck], findings: List[QCFinding], measurements: MeasurementMap, rule: AlphaEdgeRule) -> None:
+    """ADR-027. The declared mode against the pixels (only premultiplied
+    constrains them), and, with ``max_fringe_px``, the edge fringe at
+    that mode. Every sampled frame is listed in the evidence."""
+
+    ids = ["video.alpha_edges"]
+    value = _val(measurements, "video.alpha_edges")
+    if not value or not value.get("measured"):
+        reason = (value or {}).get("reason") or "the alpha edges were not measured"
+        for check_id in ("video.alpha_mode_consistent",) + (("video.alpha_edge_clean",) if rule.max_fringe_px is not None else ()):
+            check = _unknown_check(check_id, "video", reason, ids)
+            check.evidence = {"alpha_edges": value, "alpha_mode": rule.alpha_mode}
+            checks.append(check)
+        return
+    frames = value["frames"]
+    read = [f for f in frames if f.get("measured")]
+    unread = [{"frame": f["frame"], "reason": f.get("reason")} for f in frames if not f.get("measured")]
+
+    def status_for(failing: List[Any]) -> QCStatus:
+        if failing:
+            return QCStatus.FAIL
+        return QCStatus.UNKNOWN if unread else QCStatus.PASS
+
+    def unknown_reason(status: QCStatus) -> Optional[str]:
+        if status != QCStatus.UNKNOWN:
+            return None
+        return "; ".join(f"frame {u['frame']}: {u['reason']}" for u in unread)
+
+    mode_frames = [{"frame": f["frame"], "time": f["time"], **f["mode"]} for f in read]
+    failing = (
+        [m for m in mode_frames if m["over_alpha_pixels"] > 0] if rule.alpha_mode == "premultiplied" else []
+    )
+    evidence = {"alpha_mode": rule.alpha_mode, "frames": mode_frames, "violations": failing, "unmeasured": unread}
+    status = status_for(failing)
+    check = QCCheck("video.alpha_mode_consistent", "video", status, ids, evidence=evidence, reason=unknown_reason(status))
+    if failing:
+        first = failing[0]
+        w = first.get("worst") or {}
+        f = QCFinding(
+            "VIDEO_ALPHA_MODE_MISMATCH", FindingSeverity.FAIL,
+            f"{_at(first['time'])} frame {first['frame']}: {first['over_alpha_pixels']} pixels have a colour above their "
+            f"alpha (worst at x={w.get('x')}, y={w.get('y')}: {w.get('excess')} over alpha {w.get('alpha')}), which a "
+            f"premultiplied file cannot have; {len(failing)} of {len(read)} sampled frames",
+            evidence=evidence, measurement_ids=ids, timestamp=first["time"],
+        )
+        findings.append(f)
+        check.finding_codes.append(f.code)
+    checks.append(check)
+
+    if rule.max_fringe_px is None:
+        return
+    limit = rule.max_fringe_px
+    fringe_frames = [{"frame": f["frame"], "time": f["time"], **f["fringe"]} for f in read]
+    failing = [m for m in fringe_frames if m["width_px"] > limit]
+    unjudged = [
+        {"frame": m["frame"], "reason": "no partly transparent pixel within 8 px of an opaque one"}
+        for m in fringe_frames if m["partial_pixels"] > 0 and m["judged_pixels"] == 0
+    ]
+    evidence = {
+        "alpha_mode": rule.alpha_mode, "max_fringe_px": limit, "frames": fringe_frames, "violations": failing,
+        "unmeasured": unread + unjudged,
+    }
+    if failing:
+        status = QCStatus.FAIL
+    elif unread or unjudged:
+        status = QCStatus.UNKNOWN
+    else:
+        status = QCStatus.PASS
+    reason = None
+    if status == QCStatus.UNKNOWN:
+        reason = "; ".join(f"frame {u['frame']}: {u['reason']}" for u in unread + unjudged)
+    check = QCCheck("video.alpha_edge_clean", "video", status, ids, evidence=evidence, reason=reason)
+    if failing:
+        first = failing[0]
+        kind = "dark" if first["dark_pixels"] >= first["light_pixels"] else "light"
+        f = QCFinding(
+            "VIDEO_ALPHA_FRINGE", FindingSeverity.FAIL,
+            f"{_at(first['time'])} frame {first['frame']}: composited as {rule.alpha_mode}, the edge shows a {kind} fringe "
+            f"{first['width_px']} px wide ({first['fringe_pixels']} pixels, up to {max(first['max_deviation'].values())}/255 "
+            f"off), more than {limit} px; {len(failing)} of {len(read)} sampled frames",
+            evidence=evidence, measurement_ids=ids, timestamp=first["time"],
+        )
+        findings.append(f)
+        check.finding_codes.append(f.code)
+    checks.append(check)
+
+
+def _evaluate_key_fill(checks: List[QCCheck], findings: List[QCFinding], measurements: MeasurementMap) -> None:
+    """ADR-028. The pair's size, rate, frame count and timing first; the
+    frames are judged only when those match."""
+
+    ids = ["video.key_fill_pair", "video.key_fill_frames"]
+    pair = _val(measurements, "video.key_fill_pair")
+    frames = _val(measurements, "video.key_fill_frames")
+    evidence = {"pair": pair, "frames": frames}
+    if not pair or not pair.get("measured"):
+        check = _unknown_check("video.key_fill_match", "video", (pair or {}).get("reason") or "the key / fill pair was not measured", ids)
+        check.evidence = evidence
+        checks.append(check)
+        return
+    if pair["mismatches"]:
+        what = "; ".join(f"{m['field']}: fill {m['fill']}, key {m['key']}" for m in pair["mismatches"])
+        check = QCCheck("video.key_fill_match", "video", QCStatus.FAIL, ids, evidence=evidence)
+        f = QCFinding(
+            "VIDEO_KEY_FILL_MISMATCH", FindingSeverity.FAIL,
+            f"the key and the fill are not a pair ({what}); no frame was compared",
+            evidence=evidence, measurement_ids=ids,
+        )
+        findings.append(f)
+        check.finding_codes.append(f.code)
+        checks.append(check)
+        return
+    if not frames or not frames.get("measured"):
+        check = _unknown_check("video.key_fill_match", "video", (frames or {}).get("reason") or "the key / fill frames were not compared", ids)
+        check.evidence = evidence
+        checks.append(check)
+        return
+    first = frames["first_differing"]
+    check = QCCheck("video.key_fill_match", "video", QCStatus.FAIL if first else QCStatus.PASS, ids, evidence=evidence)
+    if first:
+        tol = frames["tolerance"]
+        if frames["mode"] == "alpha":
+            what = f"have a key more than {tol}/255 from the fill's alpha"
+        else:
+            what = f"outside the key (key at most {tol}/255) have a fill lit above {tol}/255"
+        f = QCFinding(
+            "VIDEO_KEY_FILL_MISMATCH", FindingSeverity.FAIL,
+            f"{_at(first['time'])} frame {first['frame']}: {first['off_pixels']} pixels ({first['off_fraction']:.4%}) {what}; "
+            f"{frames['differing_frames']} of {frames['frames_compared']} frames differ",
+            evidence=evidence, measurement_ids=ids, timestamp=first["time"],
+        )
+        findings.append(f)
+        check.finding_codes.append(f.code)
+    checks.append(check)
 
 
 def _evaluate_stinger_cut_frames(checks: List[QCCheck], findings: List[QCFinding], measurements: MeasurementMap, rule: StingerRule) -> None:
