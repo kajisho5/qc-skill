@@ -18,6 +18,8 @@ from . import CONTRACT_VERSION, PACKAGE_NAME, SKILL_ID, VERSION
 from .capabilities import REFERENCE_METRIC_FILTERS, REQUIRED_FILTERS, detect_capabilities
 from .errors import ERROR_CODES
 from .rules import (
+    ALPHA_MODES,
+    AlphaEdgeRule,
     ArtifactDependencyRule,
     ArtifactDurationConsistencyRule,
     AudioRule,
@@ -26,6 +28,8 @@ from .rules import (
     DeliveryArtifactRule,
     DeliveryPackageRule,
     DeliveryRule,
+    KEY_RANGES,
+    KeyFillRule,
     LoopSeamRule,
     POS_TAGS,
     SUBTITLE_PRESETS,
@@ -36,12 +40,16 @@ from .rules import (
     TextRegion,
     TimelineIntegrityRule,
     TimelineSegment,
+    VideoLoopRule,
     VideoRule,
 )
 from .measurements.loop_seam import (
     BAND_BASE_HZ, BAND_RANGE_DB, CLICK_CONTEXT_PERCENTILE, CLICK_CONTEXT_SEC, CLICK_WINDOW_SEC, LEVEL_FLOOR_DB,
 )
+from .measurements.alpha_edge import DEFAULT_SAMPLE_FRAMES, FRINGE_TOLERANCE, MAX_EDGE_DEPTH, MODE_TOLERANCE
+from .measurements.key_fill import DEFAULT_TOLERANCE as KEY_FILL_DEFAULT_TOLERANCE
 from .measurements.stinger import ALPHA_SCALE, OPAQUE_MIN_ALPHA
+from .measurements.video_loop_seam import DEFAULT_WINDOW_FRAMES, MAX_WINDOW_FRAMES, MIN_LOOP_FRAMES
 from .schemas import VALID_ARTIFACT_TYPES
 
 SUPPORTED_OPERATIONS = ["inspect", "check", "validate"]
@@ -61,6 +69,8 @@ SUPPORTED_VIDEO_MEASUREMENTS = [
     "video.reference_alignment", "video.vmaf", "video.ssim", "video.psnr_db",
     # opt-in, only when VideoRule.stinger is set (ADR-024)
     "video.stinger_cut_point_alpha", "video.stinger_cut_frames",
+    # opt-in, only when VideoRule.loop_seam / alpha_edge / key_fill is set (ADR-026/027/028)
+    "video.loop_seam", "video.alpha_edges", "video.key_fill_pair", "video.key_fill_frames",
 ]
 
 SUPPORTED_AUDIO_MEASUREMENTS = [
@@ -105,6 +115,7 @@ SUPPORTED_CHECKS = [
     "video.photosensitive_flash_within_limit", "video.cuts_match_expected", "video.text_legible",
     "video.vmaf_meets_minimum", "video.ssim_meets_minimum", "video.psnr_meets_minimum",
     "video.stinger_cut_point_in_cover", "video.stinger_opaque_at_cut_point", "video.stinger_cut_frame_matches",
+    "video.loop_seam_within_limit", "video.alpha_mode_consistent", "video.alpha_edge_clean", "video.key_fill_match",
     "audio.stream_present_matches_expected", "audio.decodes_without_errors", "audio.no_clipping",
     "audio.sample_rate_matches_expected", "audio.channels_match_expected", "audio.channel_layout_matches_expected",
     "audio.leading_silence_within_tolerance", "audio.trailing_silence_within_tolerance",
@@ -163,6 +174,10 @@ FINDING_CATALOG = [
     ("VIDEO_STINGER_CUT_POINT_OUTSIDE_COVER", "FAIL"),
     ("VIDEO_STINGER_NOT_OPAQUE", "FAIL"),
     ("VIDEO_STINGER_CUT_FRAME_MISMATCH", "FAIL"),
+    ("VIDEO_LOOP_SEAM_JUMP", "FAIL"),
+    ("VIDEO_ALPHA_MODE_MISMATCH", "FAIL"),
+    ("VIDEO_ALPHA_FRINGE", "FAIL"),
+    ("VIDEO_KEY_FILL_MISMATCH", "FAIL"),
     ("AUDIO_STREAM_MISSING", "FAIL"),
     ("AUDIO_STREAM_UNEXPECTED", "FAIL"),
     ("AUDIO_DECODE_ERROR", "FAIL"),
@@ -293,6 +308,11 @@ UNGROUPED_CHECKS = [
     "video.stinger_cut_point_in_cover",
     "video.stinger_opaque_at_cut_point",
     "video.stinger_cut_frame_matches",
+    # ADR-026/027/028: no Capability id for loop, alpha-edge or key / fill material exists in CAPABILITY_MATRIX.md yet.
+    "video.loop_seam_within_limit",
+    "video.alpha_mode_consistent",
+    "video.alpha_edge_clean",
+    "video.key_fill_match",
     # ADR-025: no Capability id for loop seams exists in CAPABILITY_MATRIX.md yet.
     "audio.loop_seam_click_within_limit",
     "audio.loop_seam_level_within_limit",
@@ -388,6 +408,9 @@ _NESTED_RULE_NAMES = {
     LoopSeamRule: "audio_loop_seam",
     StingerRule: "video_stinger",
     StingerCover: "video_stinger_cover",
+    VideoLoopRule: "video_loop_seam",
+    AlphaEdgeRule: "video_alpha_edge",
+    KeyFillRule: "video_key_fill",
 }
 
 
@@ -434,6 +457,9 @@ def rules_contract_schema() -> Dict[str, Any]:
         "audio_loop_seam": _rule_schema(LoopSeamRule),
         "video_stinger": _rule_schema(StingerRule),
         "video_stinger_cover": _rule_schema(StingerCover),
+        "video_loop_seam": _rule_schema(VideoLoopRule),
+        "video_alpha_edge": _rule_schema(AlphaEdgeRule),
+        "video_key_fill": _rule_schema(KeyFillRule),
     }
 
 
@@ -480,6 +506,10 @@ def skill_contract() -> Dict[str, Any]:
                 "rules.video.stinger.file: the stinger (a video with alpha) when the input is a delivered video - "
                 "resolved and fingerprinted like input; without it the input is the stinger itself (ADR-024)"
             ),
+            "key_file": (
+                "rules.video.key_fill.key_file: the key of a key / fill pair whose fill is the input - resolved and "
+                "fingerprinted like input (provenance.key_input; ADR-028)"
+            ),
             "reference_video": (
                 "companion video file path: for kind=subtitle, the duration comparison; for kind=video/delivery, "
                 "the reference that VideoRule.reference_metrics (VMAF/SSIM/PSNR) compares against - read only when "
@@ -521,6 +551,28 @@ def skill_contract() -> Dict[str, Any]:
                            "(alpha * 255 >= 253 * max at its native bit depth; video-editing-skill's rule)",
             "cut_frames": "with file + cut_at: mean absolute difference (8-bit RGB, 0-255) of the input's frame at each cut_at and "
                           "the stinger's frame at cut_point scaled to the input's size; no default for max_cut_frame_difference",
+        },
+        "video_material": {
+            "loop_seam": (
+                f"rules.video.loop_seam: {{window_frames? (1-{MAX_WINDOW_FRAMES}, default {DEFAULT_WINDOW_FRAMES}), "
+                "segments?: title.json {in, loop, out} seconds, max_seam_ratio? (no default)}: mean |RGB| (0-255) of the "
+                "loop's last -> first frame over the median of the consecutive-frame steps in window_frames on both sides; "
+                f"a loop needs at least {MIN_LOOP_FRAMES} frames (ADR-026)"
+            ),
+            "alpha_edge": (
+                f"rules.video.alpha_edge: {{alpha_mode: {'|'.join(ALPHA_MODES)} (required), times?: [seconds] (default "
+                f"{DEFAULT_SAMPLE_FRAMES} frames spread over the file), max_fringe_px? (no default)}}: premultiplied means no "
+                f"colour more than {MODE_TOLERANCE}/255 above its alpha; a fringe pixel is a partly transparent pixel within "
+                f"{MAX_EDGE_DEPTH} px of the opaque graphic whose composite over black or white at the declared mode is more "
+                f"than {FRINGE_TOLERANCE}/255 off the graphic's own colour at that alpha; width = the shorter of its "
+                "horizontal and vertical fringe runs, largest per frame (ADR-027)"
+            ),
+            "key_fill": (
+                f"rules.video.key_fill: {{key_file, tolerance? (of 255, default {KEY_FILL_DEFAULT_TOLERANCE}), "
+                f"max_off_fraction? (default 0), key_range?: {'|'.join(KEY_RANGES)} (default the key's color_range, unknown = "
+                "limited)}: the input is the fill; size, rate, frame count, start time and timecode first, then every frame: "
+                "the key against the fill's alpha, or for a fill without alpha, the fill black outside the key (ADR-028)"
+            ),
         },
         "loop_seam": {
             "rule": "rules.audio.loop_seam: {window_sec?, seams?: [seconds], include_wrap (default true), max_click_ratio?, "

@@ -15,6 +15,8 @@ from typing import Any, Dict, List, Optional
 
 from .errors import error
 from .rules import (
+    ALPHA_MODES,
+    AlphaEdgeRule,
     ArtifactDependencyRule,
     ArtifactDurationConsistencyRule,
     AudioRule,
@@ -23,6 +25,8 @@ from .rules import (
     DeliveryArtifactRule,
     DeliveryPackageRule,
     DeliveryRule,
+    KEY_RANGES,
+    KeyFillRule,
     LoopSeamRule,
     POS_TAGS,
     REFERENCE_METRICS,
@@ -35,6 +39,7 @@ from .rules import (
     TextRegion,
     TimelineIntegrityRule,
     TimelineSegment,
+    VideoLoopRule,
     VideoRule,
 )
 
@@ -252,6 +257,86 @@ def _build_stinger_rule(data: Any) -> StingerRule:
     return StingerRule(cut_point=cut_point, cover=cover, file=file, cut_at=cut_at, max_cut_frame_difference=limit)
 
 
+def _only(data: Any, name: str, allowed: set) -> None:
+    if not isinstance(data, dict):
+        raise error("INVALID_REQUEST", f"{name} must be an object")
+    unknown = set(data) - allowed
+    if unknown:
+        raise error("INVALID_REQUEST", f"unknown fields for {name}: {sorted(unknown)}")
+
+
+def _int_field(value: Any, *, field_name: str, low: int, high: int) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or not low <= value <= high:
+        raise error("INVALID_REQUEST", f"{field_name} must be a whole number from {low} to {high}")
+    return value
+
+
+def _build_video_loop_seam_rule(data: Any) -> VideoLoopRule:
+    """ADR-026: ``VideoRule.loop_seam``. ``segments`` is title.json's
+    ``{in, loop, out}`` as it stands; ``max_seam_ratio`` has no default."""
+
+    from .measurements.video_loop_seam import MAX_WINDOW_FRAMES
+
+    _only(data, "VideoRule.loop_seam", {"window_frames", "segments", "max_seam_ratio"})
+    window = None
+    if data.get("window_frames") is not None:
+        window = _int_field(data["window_frames"], field_name="VideoRule.loop_seam.window_frames", low=1, high=MAX_WINDOW_FRAMES)
+    segments = None
+    if data.get("segments") is not None:
+        raw = data["segments"]
+        if not isinstance(raw, dict) or set(raw) != {"in", "loop", "out"}:
+            raise error("INVALID_REQUEST", "VideoRule.loop_seam.segments must be title.json's {in, loop, out} (seconds)")
+        segments = {
+            k: _number(raw[k], field_name=f"VideoRule.loop_seam.segments.{k}", allow_negative=False) for k in ("in", "loop", "out")
+        }
+        if segments["loop"] <= 0:
+            raise error("INVALID_REQUEST", "VideoRule.loop_seam.segments.loop must be greater than 0 (a title without a loop has no seam)")
+    limit = None
+    if data.get("max_seam_ratio") is not None:
+        limit = _number(data["max_seam_ratio"], field_name="VideoRule.loop_seam.max_seam_ratio", allow_negative=False)
+    return VideoLoopRule(window_frames=window, segments=segments, max_seam_ratio=limit)
+
+
+def _build_alpha_edge_rule(data: Any) -> AlphaEdgeRule:
+    """ADR-027: ``VideoRule.alpha_edge``. ``alpha_mode`` is required: the
+    mode is the material's statement, never guessed."""
+
+    _only(data, "VideoRule.alpha_edge", {"alpha_mode", "times", "max_fringe_px"})
+    mode = data.get("alpha_mode")
+    if mode not in ALPHA_MODES:
+        raise error("INVALID_REQUEST", f"VideoRule.alpha_edge.alpha_mode is required: one of {list(ALPHA_MODES)}")
+    times = data.get("times")
+    if times is not None:
+        if not isinstance(times, list) or not times or len(times) > 100:
+            raise error("INVALID_REQUEST", "VideoRule.alpha_edge.times must be a list of 1 to 100 seconds")
+        times = sorted({_number(t, field_name="VideoRule.alpha_edge.times[]", allow_negative=False) for t in times})
+    limit = None
+    if data.get("max_fringe_px") is not None:
+        limit = _int_field(data["max_fringe_px"], field_name="VideoRule.alpha_edge.max_fringe_px", low=0, high=10000)
+    return AlphaEdgeRule(alpha_mode=mode, times=times, max_fringe_px=limit)
+
+
+def _build_key_fill_rule(data: Any) -> KeyFillRule:
+    """ADR-028: ``VideoRule.key_fill``; the input is the fill."""
+
+    _only(data, "VideoRule.key_fill", {"key_file", "tolerance", "max_off_fraction", "key_range"})
+    key_file = data.get("key_file")
+    if not isinstance(key_file, str) or not key_file:
+        raise error("INVALID_REQUEST", "VideoRule.key_fill.key_file is required: the key's path")
+    tolerance = None
+    if data.get("tolerance") is not None:
+        tolerance = _int_field(data["tolerance"], field_name="VideoRule.key_fill.tolerance", low=0, high=254)
+    share = None
+    if data.get("max_off_fraction") is not None:
+        share = _number(data["max_off_fraction"], field_name="VideoRule.key_fill.max_off_fraction", allow_negative=False)
+        if share >= 1:
+            raise error("INVALID_REQUEST", "VideoRule.key_fill.max_off_fraction must be below 1")
+    key_range = data.get("key_range")
+    if key_range is not None and key_range not in KEY_RANGES:
+        raise error("INVALID_REQUEST", f"VideoRule.key_fill.key_range must be one of {list(KEY_RANGES)}")
+    return KeyFillRule(key_file=key_file, tolerance=tolerance, max_off_fraction=share, key_range=key_range)
+
+
 def _validate_video_rule_fields(kwargs: Dict[str, Any]) -> None:
     """Typed validation for the ADR-016/017/018/021 VideoRule fields, which
     carry lists/objects (or bounded scores) rather than a free scalar."""
@@ -308,6 +393,12 @@ def _validate_video_rule_fields(kwargs: Dict[str, Any]) -> None:
         kwargs["min_contrast_ratio"] = ratio
     if kwargs.get("stinger") is not None:
         kwargs["stinger"] = _build_stinger_rule(kwargs["stinger"])
+    if kwargs.get("loop_seam") is not None:
+        kwargs["loop_seam"] = _build_video_loop_seam_rule(kwargs["loop_seam"])
+    if kwargs.get("alpha_edge") is not None:
+        kwargs["alpha_edge"] = _build_alpha_edge_rule(kwargs["alpha_edge"])
+    if kwargs.get("key_fill") is not None:
+        kwargs["key_fill"] = _build_key_fill_rule(kwargs["key_fill"])
     if kwargs.get("min_text_height_px") is not None:
         heights = kwargs["min_text_height_px"]
         if not isinstance(heights, dict):

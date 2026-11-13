@@ -204,6 +204,7 @@ def build_all(out_dir: Path) -> Dict[str, Path]:
     _build_reference_fixtures(out_dir, paths)
     _build_stinger_fixtures(out_dir, paths)
     _build_loop_seam_fixtures(out_dir, paths)
+    _build_video_material_fixtures(out_dir, paths)
     return paths
 
 
@@ -412,3 +413,134 @@ def _build_loop_seam_fixtures(out_dir: Path, paths: Dict[str, Path]) -> None:
         w.setframerate(16000)
         w.writeframes(b"")
     paths["loop_empty"] = empty
+
+
+# ADR-026: 64x36 @30fps loops. ORBIT is a soft dot going once round an
+# ellipse every 30 frames (a seamless loop like a rendered title loop);
+# PAN is a texture periodic in 32 px panned 1 px a frame, so 32 frames are
+# one whole period. "_short" drops the last frame: the seam then steps two
+# frames' worth. Lossless H.264, so the measured ratios do not move with
+# the encoder's version.
+ORBIT = (
+    "255*exp(-((X-32-12*cos(2*PI*{n}/30))*(X-32-12*cos(2*PI*{n}/30))"
+    "+(Y-18-8*sin(2*PI*{n}/30))*(Y-18-8*sin(2*PI*{n}/30)))/50)"
+)
+PAN = "128+90*sin(2*PI*(X+N)/32)*cos(2*PI*Y/18)"
+# ADR-028: a 230/200/60 box, 24x16 px, moving right 1 px a frame over black.
+KEY_BOX = "between(X\\,4+N\\,27+N)*between(Y\\,10\\,25)"
+KEY_LIT = "eq(N\\,10)*eq(X\\,60)*eq(Y\\,2)"  # one white pixel under alpha 0 on frame 10
+PRORES_HQ = ["-c:v", "prores_ks", "-profile:v", "3", "-vendor", "apl0", "-pix_fmt", "yuv422p10le", "-an"]
+PRORES_4444 = ["-c:v", "prores_ks", "-profile:v", "4444", "-pix_fmt", "yuva444p10le"]
+
+
+def _gray_loop(path: Path, lum: str, frames: int) -> None:
+    _run(
+        "-f", "lavfi", "-i", f"color=c=black:s=64x36:r=30:d=4,format=gray,geq=lum='{lum}'",
+        "-frames:v", str(frames), "-c:v", "libx264", "-crf", "0", "-pix_fmt", "yuv420p", str(path),
+    )
+
+
+def _key_fill_pair(src: Path, fill: Path, key: Path) -> None:
+    """ffmpeg-skill's ``export --preset key-fill`` chain (straight fill),
+    one decode split into a ProRes 422 HQ fill and key."""
+
+    _run(
+        "-i", str(src), "-filter_complex",
+        "[0:v]split[f][k];[f]format=yuv422p10le[fill];[k]alphaextract,format=yuv422p10le[key]",
+        "-map", "[fill]", *PRORES_HQ, str(fill), "-map", "[key]", *PRORES_HQ, str(key),
+    )
+
+
+def _build_video_material_fixtures(out_dir: Path, paths: Dict[str, Path]) -> None:
+    """ADR-026/027/028 fixtures: loops, alpha edges, key / fill pairs."""
+
+    for name, lum, frames in (
+        ("vloop_orbit", ORBIT.format(n="N"), 30), ("vloop_orbit_short", ORBIT.format(n="N"), 29),
+        ("vloop_pan", PAN, 32), ("vloop_pan_short", PAN, 31), ("vloop_one_frame", PAN, 1),
+    ):
+        path = out_dir / f"{name}.mp4"
+        _gray_loop(path, lum, frames)
+        paths[name] = path
+    # A title clip: IN fades the dot up over 10 frames, LOOP is one orbit
+    # (30 frames), OUT fades it down over 10: segments {in: 1/3, loop: 1, out: 1/3}.
+    title = out_dir / "vloop_title.mp4"
+    fade = "min(1\\,min((N+1)/10\\,(50-N)/10))"
+    _gray_loop(title, f"{fade}*" + ORBIT.format(n="(N-10)"), 50)
+    paths["vloop_title"] = title
+    # The orbit with its picture data zeroed: it probes (moov first), no frame decodes.
+    undecodable = out_dir / "vloop_undecodable.mp4"
+    _run("-i", str(out_dir / "vloop_orbit.mp4"), "-c", "copy", "-movflags", "+faststart", str(undecodable))
+    data = bytearray(undecodable.read_bytes())
+    at = data.find(b"mdat")
+    data[at + 4:] = bytes(len(data) - at - 4)
+    undecodable.write_bytes(bytes(data))
+    paths["vloop_undecodable"] = undecodable
+
+    # ADR-027: light grey (230) everywhere, alpha ramping 0 -> 255 over
+    # x = 16..22 (five partly transparent columns, 42..213), straight; the
+    # premultiplied copy is ffmpeg's premultiply of it.
+    straight = out_dir / "alpha_straight.mov"
+    _run(
+        "-f", "lavfi", "-i",
+        "color=c=black:s=64x36:r=30:d=1,format=rgba,geq=r='230':g='230':b='230':a='clip((X-16)*255/6\\,0\\,255)'",
+        "-c:v", "qtrle", str(straight),
+    )
+    paths["alpha_straight"] = straight
+    premult = out_dir / "alpha_premultiplied.mov"
+    _run("-i", str(straight), "-vf", "premultiply=inplace=1", "-c:v", "qtrle", str(premult))
+    paths["alpha_premultiplied"] = premult
+    prores = out_dir / "alpha_straight_prores.mov"
+    _run("-i", str(straight), *PRORES_4444, str(prores))
+    paths["alpha_straight_prores"] = prores
+    glow = out_dir / "alpha_glow.mov"  # partly transparent everywhere, nothing opaque: no edge to judge
+    _run(
+        "-f", "lavfi", "-i", "color=c=black:s=64x36:r=30:d=0.2,format=rgba,geq=r='230':g='230':b='230':a='128'",
+        "-c:v", "qtrle", str(glow),
+    )
+    paths["alpha_glow"] = glow
+
+    # ADR-028
+    box = out_dir / "kf_source.mov"
+    lit = out_dir / "kf_source_lit.mov"
+    for path, extra in ((box, ""), (lit, f"+255*{KEY_LIT}")):
+        _run(
+            "-f", "lavfi", "-i",
+            f"color=c=black:s=64x36:r=30:d=1,format=rgba,geq=r='230*{KEY_BOX}{extra}':g='200*{KEY_BOX}{extra}':"
+            f"b='60*{KEY_BOX}{extra}':a='255*{KEY_BOX}'",
+            *PRORES_4444, str(path),
+        )
+    paths["kf_source"] = box
+    for name, src in (("kf", box), ("kf_lit", lit)):
+        fill, key = out_dir / f"{name}_fill.mov", out_dir / f"{name}_key.mov"
+        _key_fill_pair(src, fill, key)
+        paths[f"{name}_fill"], paths[f"{name}_key"] = fill, key
+    late = out_dir / "kf_key_late.mov"  # the key one frame behind: frame n shows the source's alpha at n - 1
+    _run("-i", str(box), "-vf", "alphaextract,tpad=start=1:start_mode=clone,trim=end_frame=30,format=yuv422p10le", *PRORES_HQ, str(late))
+    paths["kf_key_late"] = late
+    small = out_dir / "kf_key_small.mov"
+    _run("-i", str(paths["kf_key"]), "-vf", "scale=64:34", *PRORES_HQ, str(small))
+    paths["kf_key_small"] = small
+    short = out_dir / "kf_key_short.mov"
+    _run("-i", str(paths["kf_key"]), "-frames:v", "29", *PRORES_HQ, str(short))
+    paths["kf_key_short"] = short
+    tc = out_dir / "kf_key_tc.mov"
+    _run("-i", str(paths["kf_key"]), "-timecode", "10:00:00:00", *PRORES_HQ, str(tc))
+    paths["kf_key_tc"] = tc
+    # A soft alpha ramp (0, 4, ..., 252 across x) and its key holding the
+    # alpha at full range (10-bit luma 4 * alpha) in a stream not marked full
+    # range - what ffmpeg 6.1's alphaextract -> yuv422p10le writes for the
+    # key. setrange=tv stops ffmpeg 7.1+ from converting the values for the
+    # ProRes encoder, so the stored values are the same on every version.
+    soft = out_dir / "kf_soft_source.mov"
+    _run(
+        "-f", "lavfi", "-i", "color=c=black:s=64x36:r=30:d=0.2,format=rgba,geq=r='230':g='230':b='230':a='X*4'",
+        *PRORES_4444, str(soft),
+    )
+    paths["kf_soft_source"] = soft
+    soft_key = out_dir / "kf_soft_key.mov"
+    _run(
+        "-f", "lavfi", "-i",
+        "color=c=black:s=64x36:r=30:d=0.2,format=yuv422p10le,geq=lum='X*16':cb=512:cr=512,setrange=tv",
+        *PRORES_HQ, str(soft_key),
+    )
+    paths["kf_soft_key"] = soft_key

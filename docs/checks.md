@@ -257,6 +257,142 @@ stinger one frame late 40.3 (a quarter of the picture shows through);
 for textured graphics in a lossy delivery, start around 2-5 and keep it
 well under what a frame off measures.
 
+### Opt-in title, stinger and loop material: loop seam, alpha edges, key / fill (ADR-026/027/028)
+
+Three checks for the material hyperframes-skill (or remotion-ffmpeg-skill,
+blender-skill, ffmpeg-skill) renders and video-editing-skill or a
+switcher uses. Each is its own `VideoRule` field (any `VideoRule`:
+`kind: video`, `delivery.video`, a `delivery_package` artifact's
+`video`). The caller reads the material's `title.json` / `stinger.json`
+and passes the values on; qc-skill opens no sidecar.
+
+#### Loop seam (`VideoRule.loop_seam`, ADR-026)
+
+| field | meaning |
+|---|---|
+| `window_frames` | optional, 1-12, default 4: how many frames on each side of the seam the motion inside the loop is read from |
+| `segments` | optional, title.json's `{in, loop, out}` in seconds: the loop is the frames `in <= t < in + loop` of the clip; both ends must be on a frame (within 1/1000 of one), else UNKNOWN. Without it the whole file is the loop (a `--segments` loop file, ffmpeg-skill `loop --crossfade`, remotion-ffmpeg-skill `--loop`) |
+| `max_seam_ratio` | no default: without it the seam is measured and reported, not judged |
+
+`video.loop_seam` (`src/qc_skill/measurements/video_loop_seam.py`):
+`{source: file|segments, frame_rate, window_frames, loop: {first_frame,
+last_frame, frames}, seam: {from_frame, to_frame, from_time, to_time,
+difference}, inside: [{from_frame, to_frame, difference}], reference,
+ratio, still, width, height, measured: true}` or `{measured: false,
+reason}`. Differences are the mean absolute difference of two frames in
+8-bit RGB (0-255) at the stream's own size; `seam.difference` is the
+loop's last frame against its first (what the player shows when it wraps),
+`inside` the consecutive pairs in the `window_frames` after the first
+frame and before the last, `reference` their median, and `ratio = seam /
+reference`. A loop that keeps moving across its seam measures about 1; a
+pan cut one frame short shows two frames of motion at once, about 2. On a
+still picture (`reference` 0) the ratio is 0 when the seam is still too,
+and otherwise `null` with `still: true`, which fails any limit. A file's
+frame count is ffprobe's packet count; if the file holds more frames than
+that, or the stream ends early, or a frame cannot be decoded, the
+measurement is refused with the reason. A loop needs at least 3 frames.
+
+| check_id | rule field | finding |
+|---|---|---|
+| `video.loop_seam_within_limit` | `loop_seam.max_seam_ratio` | `VIDEO_LOOP_SEAM_JUMP` when the ratio is above the limit (exactly the limit passes) or the seam jumps out of a still picture; evidence: the seam's frames and times, the ratio, the reference and every inside step; `timestamp` is the loop's last frame |
+
+Suggested `max_seam_ratio`: on the 64x36 test loops (lossless H.264) a
+seamless orbit measures 0.89 and a pan cut on its whole period 1.00;
+the same loops one frame short measure 1.70 and 1.99. Start at 1.3.
+
+#### Alpha edges (`VideoRule.alpha_edge`, ADR-027)
+
+| field | meaning |
+|---|---|
+| `alpha_mode` | required, `straight` or `premultiplied`: the mode the material declares (`title.json` / `stinger.json` `alpha`, or yours) |
+| `times` | optional list of 1 to 100 times in seconds (0 or more): the frames to read (each the nearest frame). Default 5 frames spread evenly from the first to the last |
+| `max_fringe_px` | optional whole number, no default: without it the fringe is measured, not judged |
+
+`video.alpha_edges` (`src/qc_skill/measurements/alpha_edge.py`):
+`{alpha_mode, pix_fmt, frame_rate, frames: [{frame, time, width, height,
+pixels, mode: {over_alpha_pixels, worst?: {x, y, alpha, excess}}, fringe:
+{partial_pixels, judged_pixels, unjudged_pixels, fringe_pixels,
+dark_pixels, light_pixels, width_px, max_deviation: {black, white},
+first: {x, y, alpha, deviation}}, measured: true}], measured: true}`;
+an unreadable frame is `{frame, measured: false, reason}`. Each frame is
+read as 8-bit RGBA.
+
+- **mode**: the pixels whose R, G or B is more than 2/255 above their
+  alpha. A premultiplied file has none (its colour is already multiplied
+  by alpha, rounding aside); a straight file may have any.
+- **fringe**: the partly transparent pixels (0 < alpha < 255) at the
+  graphic's edge, composited over black and over white at the declared
+  mode (straight: `c * a + bg * (1 - a)`, premultiplied: `c + bg * (1 -
+  a)`), against the graphic's own colour composited at the same alpha.
+  The graphic's colour is carried in from the opaque pixels: a partly
+  transparent pixel touching opaque ones (8 neighbours) takes their mean
+  colour, the next ring the mean of the ring before, up to 8 px deep. A
+  pixel more than 16/255 off in any channel over either background is a
+  fringe pixel, dark when below and light when above. A frame's width is
+  the largest, over its fringe pixels, of the shorter of the horizontal
+  and vertical runs of fringe pixels through it.
+
+| check_id | rule field(s) | finding |
+|---|---|---|
+| `video.alpha_mode_consistent` | `alpha_edge.alpha_mode` | `VIDEO_ALPHA_MODE_MISMATCH` when the mode is `premultiplied` and a sampled frame has a colour above its alpha (evidence: every sampled frame's count and worst pixel). `straight` constrains no pixel and passes once the frames are read: a premultiplied file declared straight is told by the fringe check |
+| `video.alpha_edge_clean` | `alpha_edge.max_fringe_px` | `VIDEO_ALPHA_FRINGE` when a sampled frame's fringe is wider than the limit (exactly the limit passes), with the width, the pixel count, dark or light and the first fringe pixel; UNKNOWN when a frame has partly transparent pixels but none within 8 px of an opaque one (a soft glow or shadow alone) |
+
+Both are UNKNOWN when the stream's pixel format has no alpha (ffprobe's
+own flags), or a sampled frame cannot be read and no frame failed. A
+binary alpha (no partly transparent pixel) has no fringe and passes.
+Known limit: a soft shadow or outline of another colour drawn right
+against opaque fill reads as a fringe of its width; set `max_fringe_px`
+above it, or sample frames without it.
+
+On the test material (grey 230, alpha ramping over 5 px) the right mode
+measures width 0 (deviation at most 1.1/255); premultiplied read as
+straight a 5 px dark fringe (up to 57/255), straight read as
+premultiplied a 5 px light one (up to 192/255).
+
+#### Key / fill (`VideoRule.key_fill`, ADR-028)
+
+The input is the fill; the key is `key_fill.key_file`.
+
+| field | meaning |
+|---|---|
+| `key_file` | required: the key's path, resolved and fingerprinted like `input` (`provenance.key_input`) |
+| `tolerance` | optional, of 255, default 2 (ffmpeg-skill's `key_level` tolerance) |
+| `max_off_fraction` | optional, default 0: the share of a frame's pixels that may be off before the frame differs |
+| `key_range` | optional, `limited` or `full`: how the key's luma maps to 0-255. Default: the key stream's `color_range` (`pc` is full); unknown is read as limited (video black is transparent, video white opaque) |
+
+**Measurements** (`src/qc_skill/measurements/key_fill.py`):
+
+| id | source | notes |
+|---|---|---|
+| `video.key_fill_pair` | ffprobe | `{fill: {width, height, frame_rate, frames, start_time, timecode, pix_fmt, alpha, color_range}, key: {...}, mismatches: [{field, fill, key}], measured: true}`; frames are packets counted by demuxing, nothing decoded. The timecode is the stream's (else the file's) `timecode` tag; start times half a frame or more apart differ |
+| `video.key_fill_frames` | ffmpeg rawvideo, every frame | `{mode: alpha\|black_outside_key, key_range, fill_range?, tolerance, max_off_fraction, frames_compared, pixels_per_frame, differing_frames, first_differing: {frame, time, off_pixels, off_fraction}, listed_differing (first 10), worst}`; `{measured: false, reason}` when the pair does not match or a frame cannot be read |
+
+Frames are decoded in chunks of at most 32 MiB, each frame's timestamp
+checked. A YUV or gray key (or fill) is read from its Y plane as stored
+(`extractplanes=y`, at its own bit depth) and mapped to 0-255 here: ffmpeg
+6.1 and 8.0 scale an untagged plane to different values, so the scaler
+is kept out of it. Where the fill carries alpha (`mode: alpha`), a pixel is off when
+the key differs from the fill's alpha by more than `tolerance`. Where it
+does not (`black_outside_key`, the fill of a key / fill export), a pixel
+is off when the key is at most `tolerance` and the fill's luma (read to
+0-255 from the fill's range the same way) is above it. Luma, not RGB: a
+4:2:2 fill's chroma reaches past every vertical edge of the graphic by
+construction, which measured 4% of the pixels "lit" on the moving-box
+test pair that a keyer shows clean.
+
+| check_id | rule field | finding |
+|---|---|---|
+| `video.key_fill_match` | `key_fill.key_file` | `VIDEO_KEY_FILL_MISMATCH` when the size, frame rate, frame count, start time or timecode differ (before any pixel is read; evidence lists each field), or when a frame's share of pixels off is above `max_off_fraction` (the first differing frame, its time and share, how many frames differ); UNKNOWN when the key cannot be read or a frame cannot be decoded |
+
+Measured on ffmpeg-skill's `export --preset key-fill` chain (ProRes 422
+HQ fill and key, straight fill): the pair passes with every frame at 0
+pixels off; the key a frame late fails at frame 1 (16 pixels, the box's
+leading edge); one pixel lit under alpha 0 fails at frame 10 (1 pixel).
+A soft alpha through the same chain on ffmpeg 6.1 writes the key's luma
+at full range in a stream not marked full range (ffmpeg 7.1 and later
+convert it for the ProRes encoder): read as limited it fails, with
+`key_range: "full"` it passes.
+
 ## Audio (`kind: "audio"`, and `kind: "delivery"` when an audio stream is present)
 
 **Measurements** (`src/qc_skill/measurements/audio.py`):

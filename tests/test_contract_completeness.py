@@ -17,7 +17,9 @@ from pathlib import Path
 
 from qc_skill import contract as contract_module
 from qc_skill import rules as rules_module
+from qc_skill.measurements import alpha_edge as alpha_edge_module
 from qc_skill.measurements import audio as audio_module
+from qc_skill.measurements import key_fill as key_fill_module
 from qc_skill.measurements import loop_seam as loop_seam_module
 from qc_skill.measurements import reference as reference_module
 from qc_skill.measurements import stinger as stinger_module
@@ -26,6 +28,7 @@ from qc_skill.measurements import temporal as temporal_module
 from qc_skill.measurements import text_legibility as text_legibility_module
 from qc_skill.measurements import transcript as transcript_module
 from qc_skill.measurements import video as video_module
+from qc_skill.measurements import video_loop_seam as video_loop_seam_module
 from qc_skill import engine as engine_module
 
 _CHECK_ID_RE = re.compile(r'QCCheck\(\s*"([a-z][a-z0-9_.]*)"')
@@ -64,7 +67,8 @@ def _actual_measurement_ids() -> set:
     ids = set()
     for module in (
         video_module, audio_module, subtitle_module, temporal_module, text_legibility_module, reference_module,
-        transcript_module, stinger_module, loop_seam_module, engine_module,
+        transcript_module, stinger_module, loop_seam_module, video_loop_seam_module, alpha_edge_module, key_fill_module,
+        engine_module,
     ):
         src = _source_of(module)
         ids |= set(_MEASUREMENT_ID_LITERAL_RE.findall(src))

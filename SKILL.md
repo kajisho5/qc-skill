@@ -131,6 +131,28 @@ One opt-in loop-seam check for audio (ADR-025), any `AudioRule`:
   (`AUDIO_LOOP_SEAM_SPECTRUM_MISMATCH`). No limit has a default; a seam
   whose windows do not fit, or audio that cannot be decoded, is UNKNOWN.
 
+Opt-in checks for title, stinger and loop material (ADR-026/027/028),
+any `VideoRule`; pass the values from the material's title.json /
+stinger.json:
+
+- `loop_seam: {window_frames? (default 4), segments?: {in, loop, out},
+  max_seam_ratio?}` -> `video.loop_seam_within_limit`
+  (`VIDEO_LOOP_SEAM_JUMP`): the loop's last -> first frame step (mean
+  |RGB|) over the median step inside it; about 1 when seamless, 2 when a
+  frame short. No default limit; a one-frame or undecodable loop is
+  UNKNOWN.
+- `alpha_edge: {alpha_mode: straight|premultiplied, times?,
+  max_fringe_px?}` -> `video.alpha_mode_consistent`
+  (`VIDEO_ALPHA_MODE_MISMATCH`: a colour above its alpha in a file
+  declared premultiplied) and `video.alpha_edge_clean`
+  (`VIDEO_ALPHA_FRINGE`: a dark or light edge wider than the limit when
+  composited at the declared mode). No alpha is UNKNOWN.
+- `key_fill: {key_file, tolerance? (default 2/255), max_off_fraction?,
+  key_range?: limited|full}` on the fill -> `video.key_fill_match`
+  (`VIDEO_KEY_FILL_MISMATCH`): size, rate, frame count, start time and
+  timecode first, then every frame (key vs the fill's alpha, or the fill
+  black outside the key), with the first differing frame.
+
 ## Example
 
 ```json
