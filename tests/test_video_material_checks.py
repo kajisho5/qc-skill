@@ -466,3 +466,22 @@ def test_without_ffmpeg_the_material_checks_are_unknown(media, workspace):
     checks = checks_by_id(run_report(parse_request(doc), ctx))
     for check_id in ("video.loop_seam_within_limit", "video.alpha_mode_consistent", "video.alpha_edge_clean", "video.key_fill_match"):
         assert checks[check_id]["status"] == "UNKNOWN" and checks[check_id]["reason"] == "ffmpeg is not available"
+
+
+def test_unknown_alpha_capability_is_unknown_not_a_fill_without_alpha(media, workspace, monkeypatch):
+    from qc_skill.measurements import key_fill as key_fill_module
+
+    monkeypatch.setattr(key_fill_module, "alpha_pixel_formats", lambda _path: None)
+    resp = run(_kf_doc(media, "kf_source", "kf_key_late"), workspace)
+    check = checks_by_id(resp)["video.key_fill_match"]
+    assert check["status"] == "UNKNOWN" and "whether the fill carries alpha" in check["reason"]
+
+
+def test_one_off_pixel_in_a_large_frame_still_differs():
+    from qc_skill.measurements.key_fill import _off_pixels
+
+    pixels = 1920 * 1080
+    key = bytes(pixels)
+    fill = bytes(pixels - 1) + b"\x80"
+    off = _off_pixels(key, fill, "black_outside_key", 2)
+    assert off == 1 and round(off / pixels, 6) == 0.0 and off > 0.0 * pixels

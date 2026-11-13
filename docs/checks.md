@@ -305,7 +305,7 @@ the same loops one frame short measure 1.60 and 1.99. Start at 1.3.
 | field | meaning |
 |---|---|
 | `alpha_mode` | required, `straight` or `premultiplied`: the mode the material declares (`title.json` / `stinger.json` `alpha`, or yours) |
-| `times` | optional, 1-100 seconds: the frames to read (each the nearest frame). Default 5 frames spread evenly from the first to the last |
+| `times` | optional list of 1 to 100 times in seconds (0 or more): the frames to read (each the nearest frame). Default 5 frames spread evenly from the first to the last |
 | `max_fringe_px` | optional whole number, no default: without it the fringe is measured, not judged |
 
 `video.alpha_edges` (`src/qc_skill/measurements/alpha_edge.py`):

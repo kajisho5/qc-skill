@@ -64,7 +64,7 @@ def _timecode(probe_data: Dict[str, Any], stream: Dict[str, Any]) -> Optional[st
 def _facts(ffprobe_path: str, path: Path, probe_data: Dict[str, Any], stream: Dict[str, Any]) -> Dict[str, Any]:
     rate = stream_frame_rate(stream)
     frames, _ = count_frames(ffprobe_path, path, int(stream["index"]))
-    formats = alpha_pixel_formats(ffprobe_path) or set()
+    formats = alpha_pixel_formats(ffprobe_path)
     try:
         start = round(float(stream.get("start_time")), 6)
     except (TypeError, ValueError):
@@ -73,7 +73,8 @@ def _facts(ffprobe_path: str, path: Path, probe_data: Dict[str, Any], stream: Di
         "width": stream.get("width"), "height": stream.get("height"),
         "frame_rate": None if rate is None else f"{rate.numerator}/{rate.denominator}",
         "frames": frames, "start_time": start, "timecode": _timecode(probe_data, stream),
-        "pix_fmt": stream.get("pix_fmt"), "alpha": stream.get("pix_fmt") in formats,
+        "pix_fmt": stream.get("pix_fmt"),
+        "alpha": None if formats is None else stream.get("pix_fmt") in formats,
         "color_range": stream.get("color_range"),
     }
 
@@ -200,11 +201,11 @@ def _compare(
             fill_values = f["raw"] if fill_read[3] is None else fill_read[3](f["raw"])
             key_values = k["raw"] if key_read[3] is None else key_read[3](k["raw"])
             off = _off_pixels(key_values, fill_values, mode, tolerance)
-            share = round(off / pixels, 6)
+            share = round(off / pixels, 6)  # reported; judged on the exact count below
             compared += 1
-            if worst is None or share > worst["off_fraction"]:
+            if worst is None or off > worst["off_pixels"]:
                 worst = {"frame": f["index"], "time": f["time"], "off_pixels": off, "off_fraction": share}
-            if share > limit:
+            if off > limit * pixels:
                 differing_count += 1
                 if len(differing) < MAX_LISTED_FRAMES:
                     differing.append({"frame": f["index"], "time": f["time"], "off_pixels": off, "off_fraction": share})
@@ -243,6 +244,8 @@ def analyze_key_fill(
             f"the {side}'s {name}" for side in ("fill", "key") for name in ("width", "height", "frame_rate", "frames")
             if facts[side][name] is None
         ]
+        if facts["fill"]["alpha"] is None:
+            unread.append("whether the fill carries alpha (ffprobe could not list the pixel formats with alpha)")
         if unread:
             reason = f"{', '.join(unread)} could not be measured"
             pair = {"measured": False, "reason": reason, **facts}
