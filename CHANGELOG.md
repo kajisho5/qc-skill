@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.4.0 - 2026-11-13
+
+- feat(video): opt-in loop-seam, alpha-edge and key/fill checks (ADR-026/027/028) (#35) (cd7c466)
+
 ## v1.3.1 - 2026-11-12
 
 - docs(roadmap): video loop seam, alpha edge and key/fill checks; check vs qc split settled (#34) (eac797b)
