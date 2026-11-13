@@ -56,13 +56,14 @@ def grab_frames(
     rate: Fraction,
     filters: List[str],
     *,
-    pix_fmt: str,
+    pix_fmt: Optional[str],
     frame_bytes: int,
     origin: float = 0.0,
     timeout: float = 120.0,
 ) -> Dict[str, Any]:
     """Decode up to ``count`` consecutive frames starting at frame
-    ``first`` through ``filters`` as ``pix_fmt`` and return
+    ``first`` through ``filters`` as ``pix_fmt`` (``None`` keeps the filters'
+    own output, e.g. a plane at its native bit depth) and return
     ``{frames: [{index, time, raw}]}`` (``time`` is the verified frame's
     ``index / rate``) - fewer than ``count`` when the
     stream ends first - or ``{reason}`` when no frame was decoded or a
@@ -71,7 +72,7 @@ def grab_frames(
     seek = origin + float(max(Fraction(0), (first - SEEK_LEAD) / rate))
     argv = ffmpeg_rawvideo_argv(
         ffmpeg_path, path, filters + ["showinfo"], stream_select=f"0:{stream_index}",
-        pix_fmt=pix_fmt, seek_sec=seek, max_frames=count, log_level="info",
+        pix_fmt=pix_fmt, keep_pix_fmt=pix_fmt is None, seek_sec=seek, max_frames=count, log_level="info",
     )
     try:
         res = run_argv(argv, timeout=timeout, binary_stdout=True)

@@ -12,7 +12,10 @@ transparent, video white opaque). The input is the fill; the key is
   * ``video.key_fill_frames`` - every frame of both, decoded in chunks
     of at most 32 MiB. The key's luma is read as 0-255 from its range
     (``key_range``, else the stream's ``color_range``; unknown is read as
-    limited, video black 16 to white 235 at 8 bit). Where the fill
+    limited, video black 16 to white 235 at 8 bit): a YUV or gray stream's
+    Y plane is taken as stored (``extractplanes=y``) and mapped here, not
+    by ffmpeg's scaler, whose reading of an untagged range differs between
+    ffmpeg versions. Where the fill
     carries alpha, a pixel is off when the key differs from the fill's
     alpha by more than ``tolerance``; where it does not, a pixel is off
     when the key is at most ``tolerance`` (outside the key) and the
@@ -27,8 +30,11 @@ Pure Python + ffmpeg/ffprobe, no numpy.
 
 from __future__ import annotations
 
+import re
+import sys
+from array import array
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from ..errors import QCError
 from ..models import QCMeasurement
@@ -80,8 +86,41 @@ def _key_range(rule: Any, key_facts: Dict[str, Any]) -> str:
     return rule.key_range if rule.key_range is not None else _stream_range(key_facts)
 
 
-def _luma_filters(range_name: str) -> List[str]:
-    return [f"scale=in_range={'pc' if range_name == 'full' else 'tv'}:out_range=pc", "format=gray"]
+_PLANAR_DEPTH_RE = re.compile(r"^(?:yuva?|gray)\w*?(\d+)?(le|be)?$")
+
+
+def _luma_reader(pix_fmt: Optional[str], range_name: str) -> Tuple[List[str], Optional[str], int, Any]:
+    """``(filters, output pix_fmt, bytes per pixel, to_255)`` that read a
+    stream's luma as 0-255 from ``range_name``. A YUV or gray stream's Y
+    plane is taken as stored (``extractplanes=y``, its own bit depth) and
+    mapped here, so no scaler's idea of an untagged range enters; any other
+    format is converted to gray by ffmpeg and read as it comes."""
+
+    m = _PLANAR_DEPTH_RE.match(pix_fmt or "")
+    if m is None or (m.group(1) is not None and m.group(2) is None):
+        return ["format=gray"], "gray", 1, None
+    depth = int(m.group(1)) if m.group(1) else 8
+    if not 8 <= depth <= 16:
+        return ["format=gray"], "gray", 1, None
+    top = (1 << depth) - 1
+    if range_name == "full":
+        lut = [round(v * 255 / top) for v in range(top + 1)]
+    else:
+        scale = 1 << (depth - 8)
+        lut = [min(255, max(0, round((v - 16 * scale) * 255 / (219 * scale)))) for v in range(top + 1)]
+    if depth == 8:
+        table = bytes(lut)
+        return ["extractplanes=y"], None, 1, lambda raw: raw.translate(table)
+    big = m.group(2) == "be"
+
+    def to_255(raw: bytes) -> bytes:
+        values = array("H")
+        values.frombytes(raw)
+        if big != (sys.byteorder == "big"):
+            values.byteswap()
+        return bytes(lut[min(v, top)] for v in values)
+
+    return ["extractplanes=y"], None, 2, to_255
 
 
 def _mismatches(fill: Dict[str, Any], key: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -128,12 +167,12 @@ def _compare(
         entry["reason"] = "the pair has no frames to compare"
         return entry
     if mode == "alpha":
-        fill_filters = ["alphaextract", "format=gray"]
+        fill_read: Tuple[List[str], Optional[str], int, Any] = (["alphaextract", "format=gray"], "gray", 1, None)
     else:
         entry["fill_range"] = _stream_range(fill_facts)
-        fill_filters = _luma_filters(entry["fill_range"])
-    key_filters = _luma_filters(key_range)
-    per_chunk = max(1, min(frames, CHUNK_BYTES // pixels))
+        fill_read = _luma_reader(fill_facts["pix_fmt"], entry["fill_range"])
+    key_read = _luma_reader(facts["key"]["pix_fmt"], key_range)
+    per_chunk = max(1, min(frames, CHUNK_BYTES // (2 * pixels)))
     fill_origin, key_origin = _stream_origin(fill_probe, fill_stream), _stream_origin(key_probe, key_stream)
     differing: List[Dict[str, Any]] = []
     differing_count = 0
@@ -143,12 +182,12 @@ def _compare(
     while start < frames:
         n = min(per_chunk, frames - start)
         got_fill = grab_frames(
-            ffmpeg_path, fill_path, int(fill_stream["index"]), start, n, rate, fill_filters,
-            pix_fmt="gray", frame_bytes=pixels, origin=fill_origin,
+            ffmpeg_path, fill_path, int(fill_stream["index"]), start, n, rate, fill_read[0],
+            pix_fmt=fill_read[1], frame_bytes=pixels * fill_read[2], origin=fill_origin,
         )
         got_key = grab_frames(
-            ffmpeg_path, key_path, int(key_stream["index"]), start, n, rate, key_filters,
-            pix_fmt="gray", frame_bytes=pixels, origin=key_origin,
+            ffmpeg_path, key_path, int(key_stream["index"]), start, n, rate, key_read[0],
+            pix_fmt=key_read[1], frame_bytes=pixels * key_read[2], origin=key_origin,
         )
         for name, got in (("fill", got_fill), ("key", got_key)):
             if "reason" in got:
@@ -158,7 +197,9 @@ def _compare(
                 entry["reason"] = f"the {name} ended at frame {got['frames'][-1]['index']}, before its counted {frames} frames"
                 return entry
         for f, k in zip(got_fill["frames"], got_key["frames"]):
-            off = _off_pixels(k["raw"], f["raw"], mode, tolerance)
+            fill_values = f["raw"] if fill_read[3] is None else fill_read[3](f["raw"])
+            key_values = k["raw"] if key_read[3] is None else key_read[3](k["raw"])
+            off = _off_pixels(key_values, fill_values, mode, tolerance)
             share = round(off / pixels, 6)
             compared += 1
             if worst is None or share > worst["off_fraction"]:

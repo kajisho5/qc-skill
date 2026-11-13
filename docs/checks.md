@@ -368,7 +368,10 @@ The input is the fill; the key is `key_fill.key_file`.
 | `video.key_fill_frames` | ffmpeg rawvideo, every frame | `{mode: alpha\|black_outside_key, key_range, fill_range?, tolerance, max_off_fraction, frames_compared, pixels_per_frame, differing_frames, first_differing: {frame, time, off_pixels, off_fraction}, listed_differing (first 10), worst}`; `{measured: false, reason}` when the pair does not match or a frame cannot be read |
 
 Frames are decoded in chunks of at most 32 MiB, each frame's timestamp
-checked. Where the fill carries alpha (`mode: alpha`), a pixel is off when
+checked. A YUV or gray key (or fill) is read from its Y plane as stored
+(`extractplanes=y`, at its own bit depth) and mapped to 0-255 here: ffmpeg
+6.1 and 8.0 scale an untagged plane to different values, so the scaler
+is kept out of it. Where the fill carries alpha (`mode: alpha`), a pixel is off when
 the key differs from the fill's alpha by more than `tolerance`. Where it
 does not (`black_outside_key`, the fill of a key / fill export), a pixel
 is off when the key is at most `tolerance` and the fill's luma (read to

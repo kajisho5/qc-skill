@@ -1128,7 +1128,10 @@ from anywhere else, or after a transfer, had no check.
   tag (measured with ffmpeg 6.1): a binary alpha reads the same either
   way, a soft one does not. `key_range` overrides the reading so such a
   key can be checked as what it holds; the default stays limited because
-  that is how a switcher reads an untagged key.
+  that is how a switcher reads an untagged key. The Y plane is read as
+  stored (`extractplanes=y`) and mapped in Python: the first version let
+  ffmpeg's scaler do it (`scale=in_range=...`), and ffmpeg 8.0 read the
+  same untagged key differently from 6.1, so CI disagreed with itself.
 
 The four checks of ADR-026/027/028 join no `provides` Capability group
 (ADR-014 precedent).
