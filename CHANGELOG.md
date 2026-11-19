@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.4.3 - 2026-11-19
+
+- ci: call Velisa's contract-diff on contract changes, one run per pull request (#38) (6ad92ce)
+
 ## v1.4.2 - 2026-11-19
 
 - ci: classify contract changes on pull requests (Velisa contract-diff, report only) (#37) (1b15b28)
