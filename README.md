@@ -146,6 +146,11 @@ measurements/checks/findings per kind
 same list - the contract only ever advertises what is actually
 implemented.
 
+`contract/contract.json` is the same contract committed as a file (byte for byte the `qc contract --json` output),
+so any release's contract is `git show vX.Y.Z:contract/contract.json`, with nothing installed or run. Regenerate it
+with `python contract/generate.py` after a contract change: a test fails when it is stale, and the release workflow
+regenerates it after the version bump.
+
 Full-reference quality metrics (VMAF/SSIM/PSNR) are opt-in: set
 `rules.video.reference_metrics` and pass the master as `reference_video`.
 VMAF needs an ffmpeg built with libvmaf (`qc doctor --json` reports
