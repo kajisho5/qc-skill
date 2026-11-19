@@ -1,0 +1,21 @@
+name: Contract diff
+
+# Is this pull request's change to contract/contract.json none, additive or breaking, and which
+# release bump does it need? Velisa's reusable workflow (Velisa ADR-020, decision D34) runs
+# System Intelligence's `si contract-diff`, labels the pull request contract:none / additive /
+# breaking and keeps one comment with every change. Report only: it never fails the pull request.
+
+on:
+  pull_request:
+    paths:
+      - "contract/contract.json"
+      - ".github/workflows/contract-diff.yml"
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  contract-diff:
+    uses: kajisho5/Velisa/.github/workflows/contract-diff.yml@main
