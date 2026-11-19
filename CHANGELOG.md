@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.4.4 - 2026-11-19
+
+- ci: try Velisa's changelog-check and release-guard (#39) (727ab83)
+
 ## v1.4.3 - 2026-11-19
 
 - ci: call Velisa's contract-diff on contract changes, one run per pull request (#38) (6ad92ce)
