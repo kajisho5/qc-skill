@@ -68,13 +68,21 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python3 scripts/dependabot_release_labels.py
 
+      # Velisa ADR-023: pull requests labelled only chore / ci / docs / test release nothing. release-drafter's
+      # `default` cannot say "no release", so release_gate.py answers that from the merged pull requests' labels.
+      - name: Decide whether anything merged since the latest tag is releasable
+        id: gate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 .github/scripts/release_gate.py
+
       # Only asked to resolve a version when pyproject.toml hasn't already
       # been bumped by hand since the last tag - see release_decide.py's
       # docstring for the full rule. `publish: false` means this never
       # creates a GitHub Release itself; we only read resolved_version.
       - name: Resolve next version from merged PR labels (dry run)
         id: drafter
-        if: steps.auto_bump.outputs.needed == 'true'
+        if: steps.auto_bump.outputs.needed == 'true' && steps.gate.outputs.releasable != 'false'
         # v7's dry-run resolves the version without writing a draft. The v6 step this replaces ran
         # with `disable-releaser: true`, which skips the drafting that computes resolved_version,
         # so the output was always empty and every push to main failed in "Decide the release".
@@ -89,7 +97,14 @@ jobs:
         id: decide
         env:
           RESOLVED_VERSION: ${{ steps.drafter.outputs.resolved_version }}
+          AUTO_BUMP: ${{ steps.auto_bump.outputs.needed }}
+          RELEASABLE: ${{ steps.gate.outputs.releasable }}
         run: |
+          if [ "$AUTO_BUMP" = "true" ] && [ "$RELEASABLE" = "false" ]; then
+            echo "Only chore/ci/docs/test pull requests since the latest tag: nothing to release (Velisa ADR-023)."
+            echo "needs_release=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if [ -n "$RESOLVED_VERSION" ]; then
             python -m scripts.release_decide --resolved-version "$RESOLVED_VERSION" --github-output "$GITHUB_OUTPUT"
           else
@@ -129,6 +144,14 @@ jobs:
           if ! git diff --cached --quiet; then
             git commit -m "chore(release): ${{ steps.decide.outputs.tag }}"
           fi
+
+      # The release commit is pushed with GITHUB_TOKEN, so no workflow runs on it on main: test it here, before
+      # it is pushed. A failure stops the release; main and the tags stay as they were (Velisa ADR-023).
+      - name: Test the release commit before pushing it
+        if: steps.decide.outputs.needs_release == 'true'
+        run: |
+          python3 -m pip install -q -e . pytest
+          python3 -m pytest -q tests/test_contract_file.py tests/test_release_changelog.py tests/test_release_decide.py tests/test_release_labels.py tests/test_release_version.py tests/test_version_source.py tests/test_release_gate.py
 
       - name: Tag and push
         if: steps.decide.outputs.needs_release == 'true'
