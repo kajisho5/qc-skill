@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.4.2 - 2026-11-19
+
+- ci: classify contract changes on pull requests (Velisa contract-diff, report only) (#37) (1b15b28)
+
 ## v1.4.1 - 2026-11-19
 
 - ci: commit the contract as contract/contract.json (#36) (8fc6618)
