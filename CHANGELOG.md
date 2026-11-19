@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.4.1 - 2026-11-19
+
+- ci: commit the contract as contract/contract.json (#36) (8fc6618)
+
 ## v1.4.0 - 2026-11-13
 
 - feat(video): opt-in loop-seam, alpha-edge and key/fill checks (ADR-026/027/028) (#35) (cd7c466)
